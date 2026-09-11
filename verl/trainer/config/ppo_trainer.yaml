@@ -197,6 +197,29 @@ trainer:
   # Device to run training on (e.g., "cuda", "cpu")
   device: cuda
 
+  # Rollout-only harness (precision scheduler experiments): run generation + reward only, dump
+  # rollouts to trainer.rollout_data_dir (required), log rollout_only/* metrics and skip
+  # logprob / advantage / update. Prints a VERL_ROLLOUT_ONLY_COMPLETE marker per step.
+  rollout_only: false
+
+  # Number of rollout-only steps; null uses trainer.total_training_steps.
+  rollout_only_steps: null
+
+  # Save the step-0 checkpoint before any training (paired policy runs start from identical weights).
+  # Prints VERL_INITIAL_CHECKPOINT_COMPLETE step=0.
+  save_initial_checkpoint: false
+
+  # Return right after the initial checkpoint (requires save_initial_checkpoint).
+  exit_after_initial_checkpoint: false
+
+  # "start:end" torch.distributed master port range for the Ray worker groups, so several Ray
+  # clusters can share one host. null falls back to the VERL_RAY_MASTER_PORT_RANGE env var.
+  ray_master_port_range: null
+
+  # Use "idx-<dataset extra_info.index>" as the TransferQueue uid instead of a uuid, so rollout
+  # dumps and request traces are joinable across paired runs.
+  stable_sample_uid: false
+
   # Whether to use V1 trainer
   use_v1: true
 

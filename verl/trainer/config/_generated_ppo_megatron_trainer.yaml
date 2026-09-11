@@ -110,6 +110,7 @@ actor_rollout_ref:
     loss_scale_factor: null
     entropy_coeff: 0
     calculate_entropy: false
+    old_log_prob_calculate_entropy: true
     calculate_sum_pi_squared: false
     use_kl_loss: false
     use_prefix_grouper: false
@@ -942,6 +943,12 @@ trainer:
   max_critic_ckpt_to_keep: null
   ray_wait_register_center_timeout: 300
   device: cuda
+  rollout_only: false
+  rollout_only_steps: null
+  save_initial_checkpoint: false
+  exit_after_initial_checkpoint: false
+  ray_master_port_range: null
+  stable_sample_uid: false
   use_v1: true
   v1:
     trainer_mode: sync

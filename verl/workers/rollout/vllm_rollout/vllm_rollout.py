@@ -42,7 +42,12 @@ from verl.utils.device import get_device_id, is_support_ipc
 from verl.workers.config import HFModelConfig, RolloutConfig
 from verl.workers.rollout.base import BaseRollout
 from verl.workers.rollout.vllm_rollout.bucketed_weight_transfer import BucketedWeightSender
-from verl.workers.rollout.vllm_rollout.utils import get_device_uuid
+from verl.workers.rollout.vllm_rollout.utils import (
+    get_device_uuid,
+    parse_bool_env,
+    weight_sync_namespace,
+    zmq_handle_for,
+)
 
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "INFO"))
@@ -105,12 +110,17 @@ class ServerAdapter(BaseRollout):
         # stale socket file) cannot collide on the shared /tmp namespace.
         local_rank = self.rollout_rank % local_world_size
         job_id = ray.get_runtime_context().get_job_id()
-        self.zmq_handle = f"ipc:///tmp/rl-colocate-zmq-{job_id}-replica-{self.replica_rank}-rank-{local_rank}.sock"
+        # VERL_ZMQ_NAMESPACE lets several independent Ray clusters on one host (which reuse
+        # job ids) keep their weight-transfer sockets apart; see weight_sync_namespace().
+        namespace = weight_sync_namespace(os.environ, default=str(job_id))
+        self.zmq_handle = zmq_handle_for(namespace, self.replica_rank, local_rank)
 
-        self.use_shm = not is_support_ipc()
+        # VERL_FORCE_SHM_WEIGHT_TRANSFER=1 forces the shared-memory path even where CUDA IPC works.
+        force_shm = parse_bool_env(os.environ.get("VERL_FORCE_SHM_WEIGHT_TRANSFER"))
+        self.use_shm = force_shm or not is_support_ipc()
         if self.use_shm:
             logger.warning(
-                "IPC is not supported on your devices. Falling back to shared memory for weight transfer, "
+                "Using shared memory for weight transfer because IPC is unsupported or explicitly disabled, "
                 "which may cause performance degradation. If you are using Ascend NPUs, please ensure that "
                 "your software and CANN toolkit versions meet the requirements for IPC support. (Ascend HDK version "
                 ">= 25.3.rc1 and CANN toolkit version >= 8.3.RC1)"
