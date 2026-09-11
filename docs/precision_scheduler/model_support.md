@@ -58,11 +58,22 @@ returns the wrong shape for that layout (`[4, 4, 4]` for a `[4, j, 17]` stack).
   expansion would silently drop them;
 - dotted wildcard targets (`decoder.layers.*.mlp.linear_fc1`) match on their
   last path component;
-- `STACKED_PARAMS` gains the five projection weights so non-merged LoRA weight
-  sync emits `base_layer` names, which vLLM's Qwen3.5 loader merges into
-  `in_proj_qkvz` / `in_proj_ba`.
+- `STACKED_PARAMS_BY_MODEL_TYPE` adds the five projection weights for the
+  Qwen3.5 family (and `.in_proj.weight` / `.out_proj.weight` for `nemotron_h`)
+  in `add_base_layer_suffix`, so non-merged LoRA weight sync emits `base_layer`
+  names, which vLLM's Qwen3.5 loader merges into `in_proj_qkvz` / `in_proj_ba`.
+  The vanilla `STACKED_PARAMS` list is unchanged for every other model type.
+- `model_type` aliases: `qwen3_5`, `qwen3_5_moe`, `qwen3_5_text`, `qwen3_5_moe_text`.
 
 The Megatron engine passes `hf_config.model_type`.
+
+Vanilla differences (apply to every Megatron+LoRA model, not only the ones
+above): the dotted-suffix fallback in `convert_megatron_to_hf_target_modules`
+now expands a target such as `decoder.layers.*.mlp.linear_fc1` on its last path
+component (`linear_fc1 -> gate_proj, up_proj`); vanilla passed dotted targets
+through verbatim. A dotted target whose last component is not a known Megatron
+name still passes through unchanged
+(`tests/utils/test_megatron_peft_target_mapping_on_cpu.py::test_dotted_suffix_fallback_only_applies_to_the_last_component`).
 
 ### Megatron helpers — `verl/utils/megatron_utils.py`
 
@@ -98,7 +109,13 @@ the `AutoConfig` path.
   Checkpointing goes through the same helper (`use_reentrant=False`).
 - `cat_unbound_jagged(tensors)`: with a per-GPU micro-batch of one sample the
   sole jagged view is returned instead of `torch.cat`-ing it (a second
-  `[tokens, vocab]` copy of several GiB at 16K x 262K).
+  `[tokens, vocab]` copy of several GiB at 16K x 262K). Because that view
+  shares storage with `output.logits`, which the entropy / sum_pi_squared
+  backward reads, the padded branch passes
+  `inplace_backward = not (calculate_entropy or calculate_sum_pi_squared)` to
+  `logprobs_from_logits`, mirroring the rmpad branch; with the in-place
+  flash-attn cross-entropy backward the gradient differed by 0.018 (scale 1.0)
+  on GPU 5 (`tests/models/test_padded_singleton_logprob_grads_on_gpu.py`).
 
 ### Gemma-4 dense FFPA — `verl/models/transformers/gemma4_ffpa.py`
 
@@ -135,6 +152,15 @@ requirement `ffpa-attn==0.2.4`; it is an optional dependency, not vendored.
 Removed env vars: `VERL_GEMMA4_DENSE_FFPA` (now the YAML knob),
 `VERL_GEMMA4_HEAD512_FALLBACK` (dead: nothing read it).
 
+Note on the all-flags-off padded path (`use_remove_padding: false`): entropy
+is now computed through `self.compute_entropy_from_logits` (the
+`torch.compile`d function when `use_torch_compile` is on) with
+`use_reentrant=False` checkpointing, and the single-sample micro-batch uses the
+zero-copy view with the in-place cross-entropy backward disabled whenever
+entropy or sum_pi_squared is requested. This is the same math as the dirty
+tree and as the rmpad path, but it is not byte-identical to vanilla for
+non-rmpad users (vanilla called the eager `verl_F.entropy_from_logits`).
+
 ## Per-model overlays — `examples/precision_scheduler/models/`
 
 See the README there. They carry the checkpoint pair (hub ids, archived
@@ -152,6 +178,8 @@ Nemotron is noted as an open item (not yet a `precision_scheduler` key).
 | `tests/utils/test_tensordict_jagged_index_select_on_cpu.py` | unit | 3-D jagged select equals list indexing on the fast path and with `unbind` forced to fail; non-RuntimeError re-raised |
 | `tests/utils/model_compat/test_gemma4_unified_config_on_cpu.py` | unit (real 12B and E2B `config.json` fixtures) | unified -> `Gemma4TextConfig` + key mapping; plain gemma4 -> AutoConfig, no mapping |
 | `tests/models/test_padded_chunked_entropy_on_cpu.py` | unit | chunked == unchunked on `[3,17,257]` with/without checkpointing; chunked helper sees `[tokens, vocab]` + chunk_size; singleton view shares storage |
+| `tests/models/test_padded_singleton_logprob_grads_on_cpu.py` | unit | `prepare_model_outputs` passes `inplace_backward=False` whenever entropy or sum_pi_squared is on (mocked `logprobs_from_logits`) |
+| `tests/models/test_padded_singleton_logprob_grads_on_gpu.py` | gpu-smoke | gradients through the singleton view are identical to the `torch.cat` copy path with entropy (and sum_pi_squared) on |
 | `tests/models/test_gemma4_ffpa_guards_on_cpu.py` | unit (no ffpa_attn) | every guard, dispatch gating, FA2 fallthrough for head_dim 256, clear ImportError |
 | `tests/models/test_gemma4_ffpa_dense_on_gpu.py` | gpu-smoke (skips without ffpa_attn) | dense FFPA vs SDPA reference, `[2,1024,8/2,512]` right-padded: cosine > 0.999, max_abs < 5e-2, backward runs |
 | `tests/examples/test_precision_scheduler_model_overlays_on_cpu.py` | unit | every overlay key exists in the base `ppo_trainer` config (except the three additive dict nodes), precision_scheduler keys by name, Phi-4/Gemma-4 specifics |

@@ -54,7 +54,8 @@ MEGATRON_TO_HF_MODULES_BY_MODEL_TYPE = {
         "out_proj": ["out_proj"],
     },
 }
-MEGATRON_TO_HF_MODULES_BY_MODEL_TYPE["qwen3_5_moe"] = MEGATRON_TO_HF_MODULES_BY_MODEL_TYPE["qwen3_5"]
+for _alias in ("qwen3_5_moe", "qwen3_5_text", "qwen3_5_moe_text"):
+    MEGATRON_TO_HF_MODULES_BY_MODEL_TYPE[_alias] = MEGATRON_TO_HF_MODULES_BY_MODEL_TYPE["qwen3_5"]
 
 # Modules with stacked parameters that need .base_layer suffix in vLLM
 STACKED_PARAMS = [
@@ -79,14 +80,26 @@ STACKED_PARAMS = [
     ".wq_b.weight",
     ".wk.weight",
     ".weights_proj.weight",
+]
+
+# Architecture-specific stacked params, keyed by HF ``model_type``; only applied by
+# ``add_base_layer_suffix`` for that model type so other Megatron+LoRA models keep
+# the vanilla list (``out_proj`` is a common module name outside these families).
+STACKED_PARAMS_BY_MODEL_TYPE = {
     # Qwen3.5 GatedDeltaNet projections (vLLM merges in_proj_qkv/in_proj_z into
     # in_proj_qkvz and in_proj_b/in_proj_a into in_proj_ba under base_layer).
-    ".in_proj_qkv.weight",
-    ".in_proj_z.weight",
-    ".in_proj_b.weight",
-    ".in_proj_a.weight",
-    ".out_proj.weight",
-]
+    "qwen3_5": [
+        ".in_proj_qkv.weight",
+        ".in_proj_z.weight",
+        ".in_proj_b.weight",
+        ".in_proj_a.weight",
+        ".out_proj.weight",
+    ],
+    # Nemotron-H Mamba mixers keep the HF names in_proj / out_proj verbatim.
+    "nemotron_h": [".in_proj.weight", ".out_proj.weight"],
+}
+for _alias in ("qwen3_5_moe", "qwen3_5_text", "qwen3_5_moe_text"):
+    STACKED_PARAMS_BY_MODEL_TYPE[_alias] = STACKED_PARAMS_BY_MODEL_TYPE["qwen3_5"]
 
 
 def count_adapter_parameters(model):
@@ -197,10 +210,10 @@ def add_base_layer_suffix(
         params: Iterator of (param_name, tensor)
         model_type: The type of the model (e.g., "llama").
     """
-    stacked_params = STACKED_PARAMS
+    stacked_params = [*STACKED_PARAMS, *STACKED_PARAMS_BY_MODEL_TYPE.get(model_type, [])]
     # TODO: other models may have more special treatment, or integrate this into Megatron-Bridge
     if model_type == "llama":
-        stacked_params = [".embed_tokens.weight", *STACKED_PARAMS]
+        stacked_params = [".embed_tokens.weight", *stacked_params]
     for name, param in params:
         ending_suffix = ""
         for suffix in stacked_params:
