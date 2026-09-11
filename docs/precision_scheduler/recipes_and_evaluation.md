@@ -216,3 +216,54 @@ GSM8K 8-row parquet from `prepare_gsm8k.py --train-size 8 --test-size 8`, 4 prom
 * The same two smokes as pytest: `PS_SMOKE_GPU=4 pytest -m gpu_smoke -k rollout_only tests/precision_scheduler/gpu/test_recipes_gpu_smoke.py`
   -> 1 passed (460 s); `PS_SMOKE_GPU=5 ... -k full_step` -> 1 passed (602 s).
 * `nvidia-smi --query-compute-apps` on GPUs 4 and 5 was empty after every run.
+
+### Integration run 2026-09-11
+
+Full report: `/data/huanchen/ps_runs/INTEGRATION_REPORT.md` (run dirs `/data/huanchen/ps_runs/int_*`). vLLM
+`/data/huanchen/vllm-clean` with C1-C9 merged, verl `rpsc/C10` @ `f7895662`, GPUs 6/7 through `run_gpu.sh`,
+Qwen3.5-4B (`851bf6e` snapshot) with the overlay's `Intel/Qwen3.5-4B-int4-AutoRound` shadow, GSM8K 2048
+(A2: the archived ema30 parquet). Every run: `validate_rollout_run.py ... --require-complete
+--expected-lora-layers 152` valid, 0 missing-graph warnings, 0 OOM, traces = 2 x requests, GPUs empty after.
+
+**Defect found and fixed.** The first pass (runs A, B3, C) ran with verl's default rollout `load_format: dummy`,
+which vLLM's `make_int4_vllm_config` inherited for the INT4 shadow: the shadow was dummy-loaded (no
+"Loading weights took" line) while every validator passed (152/152 layers bound, lifecycle probe
+`exact=True`), and the defect only surfaced as generation quality (B3: reward 0.0, 62/64 cap hits of
+multilingual garbage; A: garbage post-switch tails). vLLM now loads the shadow with `load_format=auto`
+regardless of the rollout setting and refuses `dummy`; the recipes set `validate_shadow=true` (above), whose
+cosine check against the checkpoint fails the launch at load. The table lists the `load_format=auto` numbers
+(B3', A', C') that the fix reproduces.
+
+| run | recipe | validator | switches (frontier / applied / live) | INT4 bind | graphs P/F | response tokens | gen_s | reward |
+|---|---|---|---|---|---|---|---|---|
+| A2 | `rollout_only.sh POLICY=<rev-30 EMA json> B=8x4 cap 16384, 3 steps`, archived ema30 parquet | valid | 10500 x3, live 1, 5, 4 | 152 | 29/21 | 103439, 153472, 149339 | 144.1, 176.1, 163.9 | .875, .84, .75 |
+| A' | A2's config on the 2048-row GSM8K, `load_format=auto` | valid | 10500 x3, live 3, 5, 4 | 152 | 29/21 | 109555, 171133, 177670 | 157.6, 169.5, 169.5 | .94, .81, .91 |
+| B1 | `rollout_only.sh POLICY=tail_t8 B=64 cap 4096, 1 step` | valid | 250 / 4096 / 7 | 152 | 45/29 | 148856 (23 cap hits) | 59.5 | .69 |
+| B2 | `POLICY=fixed_k2000` | valid | 2000 / 2796 / 32 (guard: live <= `capture_max_batch` 32) | 152 | 45/29 | 170514 (31) | 58.1 | .48 |
+| B3' | `POLICY=full_w4`, `load_format=auto` | valid | none (uniform) | 152 | 57/33 | 161019 (26) | 66.3 | .59 (coherent; dummy-loaded B3: 259680, 62 cap hits, 0.0) |
+| C' | `continuous_ema.sh RUNNER=full_step TOTAL_STEPS=2 B=64 cap 4096`, barrier 120 s, C6 `watch-ema` (alpha .2, slope 3.56e-4), `load_format=auto` | valid (`full_step`), `CONTINUOUS_EMA_COMPLETE` | 2000/2000/36 rev 0; 2000/2000/43 rev 1 | 152 | 49/33 | 156772, 191958 | 57.7, 61.7 | .64, .50 |
+
+C' online-loop proof: `Reloaded dynamic precision policy before rollout 1: revision=0` and `before rollout 2:
+revision=1`, cohort 2 with `policy_revision: 1, policy_reload_lagged: false`, `online_ema_state.json` at
+`completed_steps=2 / policy_revision=2`, zero reload-lag warnings.
+
+**Parity vs the archived ema30 run** (`.codex-report/new-storyline-experiments/eos_hazard_extensibility/
+b32_16k_sensitivity/runs/qwen35_4b/gsm8k/ema_tail_w4/alpha020_ema30_global_search_gpu7_20260910`, dirty
+full-step run, B = 8 x 4, cap 16384, 30 steps; A2 is the same-prompt comparison):
+
+| quantity | clean | archive | verdict |
+|---|---|---|---|
+| trainer metric names (C vs archive) | 91 | 91, set difference empty | PASS |
+| switches per rollout | A2 / A' 3/3 at 10500 | 0-1 per rollout, rev-30 table at 10500 | PASS |
+| cohort size per rollout | A2 1, 5, 4; A' 3, 5, 4 | 1-6 | PASS |
+| total response tokens, steps 1-3 | A2 406250 vs 410839 (-1%) | | PASS |
+| gen_seconds, steps 1-3 | A2 484.0 vs 467.0 (+4%); A' 496.6 (+6%) | | PASS |
+| INT4 attach | `precision=int4, lora_base_layers=152, rebound_layers=152, int4_shadow_active=152` | no bind line at WARN in the archive; 152 = the C3 design number | PASS vs design |
+| captured CUDA graphs | PIECEWISE 29 / FULL 21 | 29 / 21 | PASS exact |
+| missing-graph warnings | 0 | 0 | PASS |
+| reward mean, steps 1-3 | A2 .875 / .84 / .75; A' .94 / .81 / .91 | .84 / .81 / .75 | PASS |
+
+Other defects of the report fixed on this branch: the experiment name derived from a policy path (above,
+"experiment name"), `continuous_ema.sh RUNNER=full_step` ignoring `INITIAL_BATCH` (above, recipe table), and the
+contract log lines being invisible at `VLLM_LOGGING_LEVEL=WARN` (`telemetry_and_harness.md`). Sampling under
+async vLLM is not bitwise deterministic, so the run-to-run numbers are statistical, not golden.
