@@ -178,3 +178,31 @@ def test_summarizer_reproduces_archived_summary(tmp_path, phase, archived, requi
             assert c["training_accuracy_reward"]["summary"] == theirs["training_accuracy_reward"]["summary"]
         else:
             assert c["steps_available"] > theirs["steps_available"]
+
+
+# --- evaluator / summarizer CPU parts ---------------------------------------------------------------
+
+
+def test_evaluator_wilson_matches_protocol_numbers(tmp_path):
+    """PROTOCOL.md: step-0 validation 117/1024 = 0.1142578125, 95% Wilson [0.09620, 0.13520]."""
+    ev = _load("ps_evaluate", EXAMPLES / "long_run" / "evaluate_lora_patch.py")
+    low, high = ev.wilson(117, 1024)
+    assert round(low, 5) == 0.09620 and round(high, 5) == 0.13520
+    assert ev.wilson(0, 0) != ev.wilson(0, 0)  # nan, nan
+    assert ev.resolve_adapter(None) is None
+    peft = tmp_path / "adapter"
+    peft.mkdir()
+    (peft / "adapter_config.json").write_text("{}")
+    (peft / "adapter_model.safetensors").write_bytes(b"")
+    assert ev.resolve_adapter(peft) == peft
+    with pytest.raises(FileNotFoundError):
+        ev.export_fsdp_adapter(tmp_path / "not_a_checkpoint")
+
+
+def test_summarizer_required_steps_rules():
+    sm = _load("ps_summarize", EXAMPLES / "long_run" / "summarize_runs.py")
+    rules = sm.parse_required("b128/bf16=100,b128/full_w4=100,*=11")
+    assert sm.required_for("b128/bf16", rules, 5) == 100
+    assert sm.required_for("b64/bf16", rules, 5) == 11
+    assert sm.required_for("x", [], 5) == 5
+    assert sm.parse_range("2:11") == list(range(2, 12))
