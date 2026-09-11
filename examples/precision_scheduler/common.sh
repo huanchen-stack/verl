@@ -18,6 +18,9 @@
 #   REWARD_FN          custom reward file (default examples/precision_scheduler/rewards.py)
 #   EXPERIMENT_NAME    trainer.experiment_name (default <model>_<policy kind>, see ps_resolve_policy; it names the
 #                      FileLogger file metrics/<project>/<experiment>.jsonl, so only [A-Za-z0-9_.-] is accepted)
+#   VALIDATE_SHADOW    0 disables precision_scheduler.validate_shadow for the W4 kinds (default on: the INT4
+#                      shadow is checked against its checkpoint at load; a dummy-loaded shadow fails there
+#                      instead of showing up as garbage generations seven minutes later)
 #   PORT_BASE          torch-distributed master port range base (default 47000 + 300 * first visible GPU)
 #   DRY_RUN=1          print the resolved override list (one `OVERRIDE<TAB>...` line each) and exit 0
 #   RUN_TIMEOUT        GNU timeout duration for the trainer (default 12h)
@@ -91,6 +94,10 @@ ps_resolve_policy() {
     "${ps}.validate_lifecycle=true"
     "${ps}.online_observations=${RUN_DIR}/switch_observations.jsonl"
   )
+  # The shadow's cosine check at load (config.md validate_shadow); VALIDATE_SHADOW=0 opts out.
+  if [[ "${VALIDATE_SHADOW:-1}" != "0" ]]; then
+    PS_POLICY_OVERRIDES+=("${ps}.validate_shadow=true")
+  fi
   if [[ -n "${INT4_MODEL_PATH:-}" ]]; then
     PS_POLICY_OVERRIDES+=("${ps}.int4_model=${INT4_MODEL_PATH}")
   fi

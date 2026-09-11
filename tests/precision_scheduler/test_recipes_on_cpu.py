@@ -103,6 +103,7 @@ def test_recipe_dry_run_composes(recipe, policy, tmp_path):
         assert ps.policy == expected["policy"]
         assert ps.lora_fast_path and ps.lora_dual_stream
         assert ps.bf16_layers == "none" and ps.reprefill is False and ps.validate_lifecycle is True
+        assert ps.validate_shadow is True, "a dummy-loaded shadow must fail at load, not in generation quality"
         assert ps.online_observations == str(tmp_path / "run" / "switch_observations.jsonl")
         assert ps.int4_model == "Intel/Qwen3.5-4B-int4-AutoRound"
     else:
@@ -203,6 +204,15 @@ def test_experiment_name_override_is_kept_but_must_be_a_file_name(tmp_path):
     env["EXPERIMENT_NAME"] = "a/b"
     proc = subprocess.run(["bash", str(RECIPES["full_step"])], env=env, capture_output=True, text=True)
     assert proc.returncode == 2 and "EXPERIMENT_NAME" in proc.stderr
+
+
+def test_validate_shadow_can_be_switched_off(tmp_path):
+    overrides, _ = dry_run(RECIPES["rollout_only"], tmp_path, {"POLICY": "full_w4", "VALIDATE_SHADOW": "0"})
+    cfg = compose_overrides(overrides)
+    ps = cfg.actor_rollout_ref.rollout.precision_scheduler
+    assert ps.enable is True and ps.validate_shadow is False
+    overrides, _ = dry_run(RECIPES["rollout_only"], tmp_path, {"POLICY": "bf16", "VALIDATE_SHADOW": "1"})
+    assert not any(o.endswith("validate_shadow=true") for o in overrides), "bf16 keeps the vanilla block"
 
 
 def test_extra_positional_overrides_win(tmp_path):

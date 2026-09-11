@@ -22,7 +22,12 @@ launcher `case` statements, hand-exported environment variables and copy-pasted 
   defaults. Composition is verified on CPU for every overlay;
 * **policy**: `ps_resolve_policy` turns `POLICY` into the `rollout.precision_scheduler.*` keys
   (table in the README; the vLLM wire format is C8's `to_vllm_env()`, documented in `config.md`).
-  `bf16` sets only `enable=false`, so the vanilla path is byte-identical to upstream;
+  `bf16` sets only `enable=false`, so the vanilla path is byte-identical to upstream. Every W4 kind sets
+  `validate_shadow=true` (`VALIDATE_SHADOW=0` opts out): the 2026-09-11 integration run had a dummy-loaded
+  INT4 shadow (vLLM's shadow loader inherited verl's `load_format: dummy`) that every validator accepted
+  (152/152 layers bound, lifecycle probe `exact=True`) and that only showed up as reward 0 and 62/64 cap hits
+  in the generations; the cosine check of `validate_shadow` compares the bound shadow against its checkpoint
+  at load and fails the launch there instead;
 * **experiment name**: `trainer.experiment_name` defaults to `<MODEL_KEY>_<policy name>` where the policy
   name is derived from the policy *kind* (`bf16`, `uniform_w4`, `fixed_threshold_<N>`, `fixed_frontier_<K>`,
   `ema_<JSON basename without .json>`) and sanitized to `[A-Za-z0-9_.-]`; an explicit `EXPERIMENT_NAME` is
@@ -136,7 +141,7 @@ Question: does W4 rollout (uniform, or EMA-scheduled BF16 -> W4) change the lear
 
 Recipe variables and their archived defaults are listed in `examples/precision_scheduler/README.md`
 ("Recipes"). YAML keys touched: `actor_rollout_ref.rollout.precision_scheduler.{enable,policy,lora_fast_path,
-lora_dual_stream,bf16_layers,reprefill,validate_lifecycle,online_observations,reload_policy_each_rollout,
+lora_dual_stream,bf16_layers,reprefill,validate_lifecycle,validate_shadow,online_observations,reload_policy_each_rollout,
 request_trace_dir,request_trace_log_tokens,zmq_namespace,force_shm_weight_transfer,int4_model}`,
 `trainer.{rollout_only,rollout_only_steps,save_initial_checkpoint,exit_after_initial_checkpoint,
 ray_master_port_range,stable_sample_uid,resume_mode,save_freq,max_actor_ckpt_to_keep}`,

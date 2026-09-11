@@ -83,9 +83,10 @@ python examples/precision_scheduler/data/prepare_eos_workloads.py materialize --
 | `fixed_k<K>` | true | `fixed_frontier:<K>` (switch every request at K response tokens) | on |
 | `<file>.json` | true | that lookup-table policy (static builder or C6 EMA) | on |
 
-Every W4 kind also sets `bf16_layers=none`, `reprefill=false`, `validate_lifecycle=true` and
-`online_observations=$RUN_DIR/switch_observations.jsonl` (the archived final-recipe values). The INT4
-shadow comes from the model overlay (`INT4_MODEL_PATH` overrides it with a local snapshot).
+Every W4 kind also sets `bf16_layers=none`, `reprefill=false`, `validate_lifecycle=true`,
+`validate_shadow=true` (`VALIDATE_SHADOW=0` turns it off) and `online_observations=$RUN_DIR/switch_observations.jsonl`
+(the archived final-recipe values plus the shadow check). The INT4 shadow comes from the model overlay
+(`INT4_MODEL_PATH` overrides it with a local snapshot).
 Static baseline files: `tools/precision_scheduling/policies/build_static_policy.py --kind {frontier,live_threshold,forced_switch}`.
 
 ## Recipes
