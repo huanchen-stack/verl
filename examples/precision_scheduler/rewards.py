@@ -21,8 +21,9 @@ archived ones so re-scoring an archived rollout dump reproduces the stored rewar
                               (commas stripped);
 * ``bigmath_math_verify``     last ``<answer>...</answer>`` re-boxed as ``\\boxed{}`` (or the raw text)
                               through ``verl.utils.reward_score.math_verify``; binary;
-* ``bigmath_qerl_search``     same accuracy plus a 0.1 format bonus when an answer tag and
-                              ``</think>`` are present (the BF16 learnability search);
+* ``bigmath_qerl_search`` /   same accuracy plus a 0.1 format bonus when an answer tag and
+  ``clean_bigmath_learnability`` ``</think>`` are present (the BF16 learnability searches; the archived
+                              20260904 search crashed on its own ``clean_bigmath_learnability`` source);
 * ``eos_hazard/<workload>``   case-insensitive substring match of the gold in the last 2000 chars
                               (the non-math extensibility workloads).
 
@@ -43,7 +44,7 @@ MATH_VERIFY_TIMEOUT = 30.0
 
 GSM8K = "openai/gsm8k"
 BIGMATH = "bigmath_math_verify"
-BIGMATH_SEARCH = "bigmath_qerl_search"
+BIGMATH_SEARCH = ("bigmath_qerl_search", "clean_bigmath_learnability")
 EOS_HAZARD_PREFIX = "eos_hazard/"
 
 
@@ -92,7 +93,7 @@ def compute_score(
     if data_source == BIGMATH:
         accuracy, _ = bigmath_accuracy(solution_str, ground_truth)
         return {"score": accuracy, "accuracy": accuracy}
-    if data_source == BIGMATH_SEARCH:
+    if data_source in BIGMATH_SEARCH:
         accuracy, has_answer_tag = bigmath_accuracy(solution_str, ground_truth)
         format_reward = FORMAT_BONUS if has_answer_tag and "</think>" in solution_str.lower() else 0.0
         return {"score": accuracy + format_reward, "accuracy": accuracy, "format": format_reward}
