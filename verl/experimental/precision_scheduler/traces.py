@@ -24,12 +24,14 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
 ENGINE_SUFFIX_LENGTH = 8
+logger = logging.getLogger(__name__)
 
 
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -102,8 +104,14 @@ def read_cohorts(path: Path) -> list[dict[str, Any]]:
 
 def cohort_observation(
     cohort: dict[str, Any], finishes: dict[str, int], cap: int
-) -> tuple[np.ndarray, np.ndarray] | None:
-    """``(entry_tokens, final_lengths)`` for a cohort, or ``None`` if any request is unresolved."""
+) -> tuple[np.ndarray, np.ndarray, int] | None:
+    """``(entry_tokens, final_lengths, skipped)`` for a cohort, or ``None`` if it cannot be used.
+
+    ``None`` is returned when the cohort is empty or any request id is unresolved (its finish is
+    not in the trace yet).  Requests whose final length precedes their switch entry (aborted or
+    truncated requests) are skipped with a warning and counted in ``skipped``; a cohort with no
+    usable request left also yields ``None``.
+    """
     requests = cohort.get("requests", [])
     if not requests:
         return None
@@ -112,9 +120,19 @@ def cohort_observation(
         return None
     entries = np.asarray([int(row["entry_output_tokens"]) for row in requests], dtype=np.int64)
     finals = np.asarray([min(finishes[rid], cap) for rid in ids], dtype=np.int64)
-    if np.any(finals < entries):
-        raise RuntimeError(f"rollout {cohort.get('rollout_index')}: final length precedes switch entry")
-    return entries, finals
+    valid = finals >= entries
+    skipped = int(np.count_nonzero(~valid))
+    if skipped:
+        logger.warning(
+            "rollout %s: skipping %d of %d switched requests whose final length precedes the switch entry",
+            cohort.get("rollout_index"),
+            skipped,
+            len(requests),
+        )
+        entries, finals = entries[valid], finals[valid]
+    if not len(entries):
+        return None
+    return entries, finals, skipped
 
 
 def read_metrics(paths: list[Path]) -> list[dict[str, Any]]:

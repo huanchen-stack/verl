@@ -88,16 +88,21 @@ def test_cohort_observation_and_read_cohorts(tmp_path):
             {"request_id": "b", "entry_output_tokens": 800},
         ],
     }
-    entries, finals = cohort_observation(cohort, finishes, grid.cap)
+    entries, finals, skipped = cohort_observation(cohort, finishes, grid.cap)
     np.testing.assert_array_equal(entries, [750, 800])
     np.testing.assert_array_equal(finals, [900, 4096])
+    assert skipped == 0
     assert cohort_observation(dict(cohort, requests=[]), finishes, grid.cap) is None
     unresolved = dict(cohort, requests=[{"request_id": "zzz", "entry_output_tokens": 1}])
     assert cohort_observation(unresolved, finishes, grid.cap) is None
-    with pytest.raises(RuntimeError, match="precedes switch entry"):
-        cohort_observation(
-            dict(cohort, requests=[{"request_id": "a", "entry_output_tokens": 1000}]), finishes, grid.cap
-        )
+    # a request whose final length precedes its switch entry is skipped, not fatal
+    aborted = {"request_id": "a", "entry_output_tokens": 1000}
+    entries, finals, skipped = cohort_observation(
+        dict(cohort, requests=[*cohort["requests"], aborted]), finishes, grid.cap
+    )
+    np.testing.assert_array_equal(entries, [750, 800])
+    assert skipped == 1
+    assert cohort_observation(dict(cohort, requests=[aborted]), finishes, grid.cap) is None
     path = tmp_path / "switch_observations.jsonl"
     write_lines(path, [cohort, {"event": "other"}, cohort])
     assert len(read_cohorts(path)) == 2

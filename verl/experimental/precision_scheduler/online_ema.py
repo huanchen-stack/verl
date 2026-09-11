@@ -68,12 +68,13 @@ def replay_cohorts(
         observation = cohort_observation(cohort, finishes, grid.cap)
         if observation is None:
             continue
-        entries, finals = observation
+        entries, finals, skipped = observation
         table = ema_update(table, components(entries, finals, grid), alpha)
         processed.append(
             {
                 "rollout_index": index,
                 "requests": int(len(entries)),
+                "skipped_requests": skipped,
                 "entry_tokens_mean": float(np.mean(entries)),
                 "final_tokens_mean": float(np.mean(finals)),
                 "cap_requests": int(np.sum(finals >= grid.cap)),

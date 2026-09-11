@@ -103,16 +103,22 @@ def policy_from_decisions(
     if decisions.shape != grid.shape:
         raise ValueError(f"decisions shape {decisions.shape} does not match grid {grid.shape}")
     frontiers, prompts = grid.frontiers, grid.prompts
+    capture = grid.batch if capture_max_batch is None else int(capture_max_batch)
+    # The scheduler only switches while the live batch fits the captured CUDA graphs, so the
+    # guard can never exceed capture_max_batch (the vLLM loader rejects such a policy).
+    guard = min(grid.batch, capture) if max_switch_live_batch is None else int(max_switch_live_batch)
+    if guard > capture:
+        raise ValueError(f"max_switch_live_batch {guard} exceeds capture_max_batch {capture}")
     return {
         "schema_version": SCHEMA_VERSION,
         "description": description,
         "scan_interval_tokens": grid.step,
         "arm_min_requests": grid.batch,
-        "capture_max_batch": grid.batch if capture_max_batch is None else int(capture_max_batch),
+        "capture_max_batch": capture,
         "commitment_enabled": True,
         "receding_horizon_lookup": bool(receding_horizon_lookup),
         "initial_rollout_batch": grid.batch,
-        "max_switch_live_batch": grid.batch if max_switch_live_batch is None else int(max_switch_live_batch),
+        "max_switch_live_batch": guard,
         "calibration": dict(calibration),
         "offline_cost_model": {
             "response_cap": grid.cap,
@@ -178,9 +184,10 @@ def fixed_frontier_policy(
 ) -> dict[str, Any]:
     """Dense policy that switches every request at one fixed response frontier (heuristic baseline).
 
-    Byte-compatible with the archived ``build_fixed_frontier_policy.py`` output; the runtime also
-    accepts the inline spec ``fixed_frontier:K`` so this generator exists for archival compatibility
-    and for forced-switch calibration rollouts.
+    Same table and metadata as the archived ``build_fixed_frontier_policy.py`` output plus the two
+    schema-6 keys the validator requires (``max_switch_live_batch``, ``offline_cost_model``).  The
+    runtime also accepts the inline spec ``fixed_frontier:K``, so this generator exists for archival
+    compatibility and for forced-switch calibration rollouts.
     """
     if frontier % step:
         raise ValueError("frontier must be aligned to the scan grid")
@@ -204,7 +211,7 @@ def fixed_frontier_policy(
         "commitment_enabled": True,
         "receding_horizon_lookup": False,
         "initial_rollout_batch": batch,
-        "max_switch_live_batch": batch,
+        "max_switch_live_batch": min(batch, capture_max_batch),
         "calibration": {
             "kind": "fixed generation-length baseline",
             "fixed_response_frontier": frontier,
@@ -246,6 +253,8 @@ def validate_policy(policy: dict[str, Any]) -> None:
         not isinstance(policy["max_switch_live_batch"], int) or policy["max_switch_live_batch"] <= 0
     ):
         raise ValueError("max_switch_live_batch must be a positive integer or null")
+    if policy["max_switch_live_batch"] is not None and policy["max_switch_live_batch"] > policy["capture_max_batch"]:
+        raise ValueError("max_switch_live_batch must not exceed capture_max_batch")
     for key in ("commitment_enabled", "receding_horizon_lookup"):
         if not isinstance(policy[key], bool):
             raise ValueError(f"{key} must be a boolean")

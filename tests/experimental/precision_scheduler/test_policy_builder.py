@@ -29,6 +29,7 @@ from verl.experimental.precision_scheduler.policy_builder import (
     decisions_array,
     fixed_frontier_policy,
     lookup,
+    policy_from_decisions,
     validate_policy,
 )
 
@@ -195,3 +196,32 @@ def test_fixed_frontier_policy_matches_archived_generator():
     assert policy["calibration"]["fixed_response_frontier"] == 8000
     with pytest.raises(ValueError):
         fixed_frontier_policy(batch=32, cap=16384, frontier=8001)
+
+
+def test_fixed_frontier_guard_never_exceeds_capture_max_batch():
+    policy = fixed_frontier_policy(batch=64, cap=16384, frontier=8000)
+    validate_policy(policy)
+    assert policy["capture_max_batch"] == 32 and policy["max_switch_live_batch"] == 32
+    assert policy["lookup_table"]["live_batch_count"] == 64
+    assert (
+        fixed_frontier_policy(batch=64, cap=16384, frontier=8000, capture_max_batch=64)["max_switch_live_batch"] == 64
+    )
+    with pytest.raises(ValueError, match="capture_max_batch"):
+        validate_policy(dict(policy, max_switch_live_batch=64))
+    # the EMA builder path caps the guard the same way and refuses an explicit oversize guard
+    grid = PolicyGrid(step=250, cap=1000, batch=8, prompt_step=512, prompt_max=512)
+    decisions = np.zeros(grid.shape, dtype=np.int64)
+    capped = policy_from_decisions(
+        decisions, grid, description="d", calibration={"kind": "k"}, slope=0.0, capture_max_batch=4
+    )
+    assert capped["max_switch_live_batch"] == 4 and capped["capture_max_batch"] == 4
+    with pytest.raises(ValueError, match="exceeds capture_max_batch"):
+        policy_from_decisions(
+            decisions,
+            grid,
+            description="d",
+            calibration={"kind": "k"},
+            slope=0.0,
+            capture_max_batch=4,
+            max_switch_live_batch=8,
+        )
