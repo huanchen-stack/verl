@@ -185,4 +185,6 @@ GSM8K 8-row parquet from `prepare_gsm8k.py --train-size 8 --test-size 8`, 4 prom
 * First attempt of both smokes failed with `AttributeError: module 'vllm.envs' has no attribute
   'VLLM_DUAL_PRECISION_POLICY'`: the C2/C4 merge landed in `/data/huanchen/vllm-clean` while the engine was
   importing (new `scheduler.py`, old `envs.py`). Re-running on the consistent tree passed.
+* The same two smokes as pytest: `PS_SMOKE_GPU=4 pytest -m gpu_smoke -k rollout_only tests/precision_scheduler/gpu/test_recipes_gpu_smoke.py`
+  -> 1 passed (460 s); `PS_SMOKE_GPU=5 ... -k full_step` -> 1 passed (602 s).
 * `nvidia-smi --query-compute-apps` on GPUs 4 and 5 was empty after every run.
