@@ -1,0 +1,48 @@
+# NVIDIA Nemotron-Nano-9B-v2 (Nemotron-H hybrid Mamba/attention; flagged tier) -- per-model overlay.
+#
+# Checkpoint pair:
+#   nvidia/NVIDIA-Nemotron-Nano-9B-v2                    @ 6533e8de2c68e4536bf7c411d7a3ce5734111476  (BF16)
+#   RedHatAI/NVIDIA-Nemotron-Nano-9B-v2-quantized.w4a16  @ 6cd9a7fcbb09bff44a641f23bd9e6afe8a96c7c6  (compressed-tensors W4A16, group 64)
+#
+# Notes:
+#   * Mamba mixers use the HF names in_proj / out_proj verbatim (no expansion);
+#     they are LoRA targets alongside the attention/MLP projections.
+#   * mixer.down_proj has K = 15680 (hidden 4480, intermediate 15680), which is
+#     not a multiple of the Marlin tile (128), so vLLM falls back to the slower
+#     Triton W4A16 kernel for that layer.  The vLLM-side flag
+#     VLLM_MARLIN_INPUT_PADDING=1 pads K to 15744 with one all-zero group and a
+#     unit scale (exact; validated against Triton, cosine >= 0.99999).  It is a
+#     vLLM env var (vllm/envs.py) and is not yet a key of the
+#     rollout.precision_scheduler block; set it in the server environment until
+#     a `marlin_input_padding` key exists.
+#   * Megatron training of Nemotron-H (HybridStack recompute hook, rope-theta
+#     skip in verl/utils/megatron_utils.py) is not first-class in this branch;
+#     this overlay is the FSDP2 configuration.
+data:
+  apply_chat_template_kwargs:
+    enable_thinking: true
+
+actor_rollout_ref:
+  model:
+    path: nvidia/NVIDIA-Nemotron-Nano-9B-v2
+    trust_remote_code: true
+    use_remove_padding: true
+    lora_rank: 16
+    lora_alpha: 16
+    target_modules:
+      - q_proj
+      - k_proj
+      - v_proj
+      - o_proj
+      - up_proj
+      - down_proj
+      - in_proj
+      - out_proj
+  rollout:
+    load_format: dummy
+    engine_kwargs:
+      vllm:
+        lora_target_modules: ${actor_rollout_ref.model.target_modules}
+    precision_scheduler:
+      int4_model: RedHatAI/NVIDIA-Nemotron-Nano-9B-v2-quantized.w4a16
+      int4_modules: all

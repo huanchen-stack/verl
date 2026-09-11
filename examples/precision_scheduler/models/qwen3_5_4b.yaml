@@ -1,0 +1,41 @@
+# Qwen3.5-4B (first-class) -- per-model overlay for the precision scheduler recipes.
+# Merge on top of the base ppo_trainer config (see README.md in this directory).
+#
+# Checkpoint pair (HF hub ids; local snapshots used by the archived runs:
+#   Qwen/Qwen3.5-4B @ 851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a
+#   Intel/Qwen3.5-4B-int4-AutoRound @ 0a857215cab37e8caa857a053005a73cf98ff2c4).
+# Qwen3.5 is a GatedDeltaNet/attention hybrid: the linear-attention projections
+# in_proj_{qkv,z,b,a} / out_proj are LoRA targets alongside the usual ones.
+data:
+  apply_chat_template_kwargs:
+    enable_thinking: true
+
+actor_rollout_ref:
+  model:
+    path: Qwen/Qwen3.5-4B
+    trust_remote_code: true
+    use_remove_padding: true
+    lora_rank: 16
+    lora_alpha: 16
+    target_modules:
+      - q_proj
+      - k_proj
+      - v_proj
+      - o_proj
+      - gate_proj
+      - up_proj
+      - down_proj
+      - in_proj_qkv
+      - in_proj_z
+      - in_proj_b
+      - in_proj_a
+      - out_proj
+  rollout:
+    load_format: dummy
+    engine_kwargs:
+      vllm:
+        lora_target_modules: ${actor_rollout_ref.model.target_modules}
+    precision_scheduler:
+      # INT4 shadow for the dual-precision rollout (AutoRound GPTQ W4A16, qweight layout).
+      int4_model: Intel/Qwen3.5-4B-int4-AutoRound
+      int4_modules: all

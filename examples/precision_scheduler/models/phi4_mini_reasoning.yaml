@@ -1,0 +1,44 @@
+# Phi-4-mini-reasoning (first-class, config-only) -- per-model overlay.
+#
+# Checkpoint pair:
+#   microsoft/Phi-4-mini-reasoning @ 0e3b1e2d02ee478a3743abe3f629e9c0cb722e0a  (BF16, Phi3ForCausalLM)
+#   alishafique/Phi-4-mini-reasoning-quantized.gptq-w4a16-llmcompressor
+#     @ cd02ec785c43b040238d58097c02369a8c9132f4  (compressed-tensors W4A16, weight_packed layout)
+# The W4 checkpoint is a community llm-compressor quantization; the archived
+# results were flagged screening_only ("positive results require locally
+# quantized replication").  Phi-4-mini-flash-reasoning (Phi4FlashForCausalLM)
+# is NOT supported by vLLM V1 and has no W4 pair.
+#
+# There is no Phi-specific code in either repo.  Two things differ from the
+# Qwen overlays:
+#   * Phi3 fuses the projections, so LoRA targets are the fused names
+#     qkv_proj / gate_up_proj / o_proj / down_proj.
+#   * rollout.load_format must be `auto`, not `dummy`: Phi3's vLLM
+#     AutoWeightsLoader does not rebuild the non-quantized embedding / norm /
+#     lm_head tensors from verl's dummy init + streamed base-weight update when a
+#     dual-precision INT4 shadow is attached.  Loading the BF16 base once makes
+#     those tensors valid; subsequent LoRA updates use the normal verl path.
+data:
+  apply_chat_template_kwargs:
+    enable_thinking: true
+
+actor_rollout_ref:
+  model:
+    path: microsoft/Phi-4-mini-reasoning
+    trust_remote_code: true
+    use_remove_padding: true
+    lora_rank: 16
+    lora_alpha: 16
+    target_modules:
+      - qkv_proj
+      - o_proj
+      - gate_up_proj
+      - down_proj
+  rollout:
+    load_format: auto
+    engine_kwargs:
+      vllm:
+        lora_target_modules: ${actor_rollout_ref.model.target_modules}
+    precision_scheduler:
+      int4_model: alishafique/Phi-4-mini-reasoning-quantized.gptq-w4a16-llmcompressor
+      int4_modules: all
