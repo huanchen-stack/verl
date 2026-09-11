@@ -28,6 +28,8 @@ set them by hand. The table below is the single documentation of that wire forma
 | `validate_lifecycle` | `VLLM_DUAL_PRECISION_VALIDATE_LIFECYCLE` | bool, `false` | Validate request lifecycle bookkeeping in the scheduler. |
 | `request_trace_dir` | `VERL_REQUEST_TRACE_DIR` | str, `null` | Directory of the per-request lifetime trace written by the verl vLLM server actor. |
 | `request_trace_log_tokens` | `VERL_REQUEST_TRACE_LOG_TOKENS` | bool, `false` | Add sampled `token_ids` to trace finish rows. |
+| `zmq_namespace` | `VERL_ZMQ_NAMESPACE` | str, `null` | Namespace of the colocated weight-transfer socket (sanitised to `[A-Za-z0-9_-]`); independent of `enable`, omitted when null. |
+| `force_shm_weight_transfer` | `VERL_FORCE_SHM_WEIGHT_TRANSFER` | bool, `false` | Force the shared-memory weight-transfer path; independent of `enable`, omitted when false. |
 
 ## Emission rules
 
@@ -36,6 +38,10 @@ set them by hand. The table below is the single documentation of that wire forma
   differs from its default. A vanilla config therefore emits an empty dict and the vLLM server sees
   exactly the upstream environment.
 * When `enable` is `true`, every non-null key is emitted (including `policy: ""`).
+* `zmq_namespace` and `force_shm_weight_transfer` are host-isolation knobs independent of `enable`:
+  they are emitted whenever set (a non-empty namespace, `force_shm_weight_transfer: true`) and omitted
+  otherwise, so a vanilla config still emits `{}`. The worker-side readers (`ServerAdapter`,
+  `vLLMColocateWorkerExtension`) read the env vars: they are the wire, not a second config path.
 * `sleep_level` never becomes an env var: `resolve_sleep_level()` applies it inside
   `vLLMHttpServer.sleep()` / `_sleep_hybrid()`. With `enable: true` the level is forced to 1 (logged),
   because level 2 discards the resident INT4 shadow weights; `enable: true` with `sleep_level: 2` is
@@ -48,9 +54,11 @@ set them by hand. The table below is the single documentation of that wire forma
 2. `vLLMReplica.launch_servers()` merges the same dict into the vLLM server actor's `runtime_env.env_vars`
    for clusters that were initialised outside `main_ppo.py`.
 
-The former hard-coded allowlist in `constants_ppo.py` is replaced by the dict above plus a prefix
-pass-through of `VLLM_DUAL_PRECISION_*`, `VERL_*` and `TMPDIR` from the driver environment
-(`collect_forwarded_env()`), kept for launchers that still export variables by hand.
+The former hard-coded allowlist in `constants_ppo.py` is replaced by the dict above plus
+`collect_forwarded_env()`, a **compatibility pass-through** of `VLLM_DUAL_PRECISION_*`, `VERL_*` and
+`TMPDIR` from the driver environment for launchers that still export variables by hand. New recipes
+must not rely on it: every knob has a YAML key, and a YAML value is emitted after the pass-through,
+so it wins over a hand-set variable of the same name.
 
 ## Trainer-side harness keys (not env vars)
 
@@ -64,8 +72,7 @@ pass-through of `VLLM_DUAL_PRECISION_*`, `VERL_*` and `TMPDIR` from the driver e
 | `trainer.stable_sample_uid` | `false` | Use `idx-<dataset index>` as the TransferQueue uid so traces are joinable across paired runs. |
 | `actor_rollout_ref.actor.old_log_prob_calculate_entropy` | `true` | Compute entropy in the old-logprob pass (`false` skips it and the `actor/entropy` metric). |
 
-Host-isolation knobs for several experiments on one machine stay environment variables because they
-are set per process by the launcher, not per experiment config: `VERL_ZMQ_NAMESPACE` (weight-transfer
-socket namespace, sanitised to `[A-Za-z0-9_-]`), `VERL_FORCE_SHM_WEIGHT_TRANSFER` (`1/true/yes/on`),
-and `VERL_RAY_MASTER_PORT_RANGE` (fallback for the YAML key). All are covered by the `VERL_*`
-pass-through.
+The host-isolation knobs are YAML keys too (`precision_scheduler.zmq_namespace`,
+`precision_scheduler.force_shm_weight_transfer`, `trainer.ray_master_port_range`); their env forms
+(`VERL_ZMQ_NAMESPACE`, `VERL_FORCE_SHM_WEIGHT_TRANSFER`, `VERL_RAY_MASTER_PORT_RANGE`) remain readable
+through the `VERL_*` pass-through for hand-set launches only.

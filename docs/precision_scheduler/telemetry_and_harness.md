@@ -72,14 +72,17 @@ right after it. A resumed run (`global_steps != 0`) is rejected.
 * `trainer.ray_master_port_range: "start:end"` (env fallback `VERL_RAY_MASTER_PORT_RANGE`) is
   parsed by `verl/utils/net_utils.py::parse_port_range()` (`0 < start < end <= 65536`) and passed
   to `RayWorkerGroup(master_port_range=...)`.
-* `VERL_ZMQ_NAMESPACE` names the colocated weight-transfer socket; `weight_sync_namespace()` and
-  `zmq_handle_for()` in `verl/workers/rollout/vllm_rollout/utils.py` are the single sanitizer used
-  by the sender (`ServerAdapter`) and the receiver (`vLLMColocateWorkerExtension`), replacing the
-  copy-pasted sanitizer whose drift would silently break the CUDA-IPC handshake.
-* `VERL_FORCE_SHM_WEIGHT_TRANSFER` (`parse_bool_env`) forces the shared-memory path.
+* `precision_scheduler.zmq_namespace` (wire: `VERL_ZMQ_NAMESPACE`) names the colocated
+  weight-transfer socket; `weight_sync_namespace()` and `zmq_handle_for()` in
+  `verl/workers/rollout/vllm_rollout/utils.py` are the single sanitizer used by the sender
+  (`ServerAdapter`) and the receiver (`vLLMColocateWorkerExtension`), replacing the copy-pasted
+  sanitizer whose drift would silently break the CUDA-IPC handshake.
+* `precision_scheduler.force_shm_weight_transfer` (wire: `VERL_FORCE_SHM_WEIGHT_TRANSFER`,
+  `parse_bool_env`) forces the shared-memory path.
 
-These stay environment variables because a launcher sets them per process for several
-experiments on one host; the `VERL_*` pass-through forwards them into every Ray actor.
+Both are emitted by `to_vllm_env()` only when set, so vanilla still emits `{}`; the worker-side
+`os.environ` readers are the wire format, and the `VERL_*` pass-through keeps hand-set launches
+working.
 
 ### Sleep level
 
@@ -161,21 +164,16 @@ the env variables that remain).
 
 ## Smoke result
 
-NOT PASSING as of 2026-09-11 (slot B): three launches of
-`tests/special_e2e/precision_scheduler/run_rollout_only_smoke.sh` on GPU 4 (Qwen3.5-4B, GSM8K,
-8 x 4 requests, `precision_scheduler.enable=false`) got through config validation, dataset load
-and Ray init, then lost their GCS / raylet within about a minute
-(`Raylet is terminated. Termination is unexpected`, `ActorUnavailableError`). Cause: the shared
-launcher `scripts/precision_scheduler/env/run_gpu.sh` ends every run with `ray stop --force`,
-which scans all processes host-wide by name (`raylet`, `gcs_server`, `ray::`, ...) and kills them
-regardless of temp dir, so any concurrent component finishing a GPU test kills every other Ray
-cluster of the same user. Bare `ray.init(_temp_dir=...)` on this host succeeds in 5 s. Fix for the
-launcher (C0): drop `ray stop --force` (the process-group kill already covers the Ray processes
-that `ray.init()` spawned under the private `RAY_TMPDIR`) or restrict it to processes whose
-command line mentions that `RAY_TMPDIR`. Re-run when no other launcher is active:
+PASSED (2026-09-11, GPU 4, through the fixed launcher, rc 0): Qwen3.5-4B, GSM8K, 8 prompts x 4
+samples, response cap 2048, `precision_scheduler.enable=false`, tracing with token ids.
+Marker `VERL_ROLLOUT_ONLY_COMPLETE step=1 requests=32 gen_seconds=95.52`;
+`rollout_only/response_tokens=55646`, `critic/rewards/mean=0.625`; 64 trace rows (32 start + 32
+finish); `validate_rollout_only_run.py` → `valid=true`. Run dir:
+`/tmp/claude-1004/-data-huanchen-verl/eccbbdf5-0e92-4b83-9e1c-f3d6da52e976/scratchpad/c8rev/ps_smoke`.
+Earlier attempts in slot B were killed by the launcher's host-wide `ray stop --force` (fixed in C0).
 
 ```
-RUN_DIR=/tmp/ps_smoke scripts/precision_scheduler/env/run_gpu.sh --gpus 4 --timeout 1800 -- \
+RUN_DIR=<run dir> scripts/precision_scheduler/env/run_gpu.sh --gpus 4 --timeout 1800 -- \
   bash tests/special_e2e/precision_scheduler/run_rollout_only_smoke.sh
-python tests/special_e2e/precision_scheduler/validate_rollout_only_run.py /tmp/ps_smoke --expected-requests 32
+python tests/special_e2e/precision_scheduler/validate_rollout_only_run.py <run dir> --expected-requests 32
 ```
