@@ -89,13 +89,12 @@ def get_ppo_ray_runtime_env(precision_scheduler: Optional[Any] = None):
 
 
 def _precision_scheduler_env(precision_scheduler: Optional[Any]) -> dict[str, str]:
-    from verl.workers.rollout.vllm_rollout.precision_scheduler_env import collect_forwarded_env, to_vllm_env
+    from verl.workers.config.precision_scheduler import PrecisionSchedulerConfig, collect_forwarded_env, to_vllm_env
 
     env_vars = collect_forwarded_env(os.environ)
     if precision_scheduler is None:
         return env_vars
     from verl.utils.config import omega_conf_to_dataclass
-    from verl.workers.config import PrecisionSchedulerConfig
 
     if not isinstance(precision_scheduler, PrecisionSchedulerConfig):
         precision_scheduler = omega_conf_to_dataclass(precision_scheduler, dataclass_type=PrecisionSchedulerConfig)

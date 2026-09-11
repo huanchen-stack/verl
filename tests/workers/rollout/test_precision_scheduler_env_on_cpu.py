@@ -177,7 +177,7 @@ def test_resolve_sleep_level(caplog):
     assert resolve_sleep_level(PrecisionSchedulerConfig(), 2) == 2
     assert resolve_sleep_level(PrecisionSchedulerConfig(sleep_level=2), 1) == 2
     assert resolve_sleep_level(PrecisionSchedulerConfig(sleep_level=1), 2) == 1
-    with caplog.at_level(logging.INFO, logger="verl.workers.rollout.vllm_rollout.precision_scheduler_env"):
+    with caplog.at_level(logging.INFO, logger="verl.workers.config.precision_scheduler"):
         assert resolve_sleep_level(PrecisionSchedulerConfig(enable=True), 2) == 1
     assert "forces vLLM sleep level 1" in caplog.text
     assert resolve_sleep_level(PrecisionSchedulerConfig(enable=True, sleep_level=1), 2) == 1

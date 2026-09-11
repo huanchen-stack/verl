@@ -14,7 +14,7 @@ new keys behaves exactly like upstream verl `2390a3f5`.
 
 `actor_rollout_ref.rollout.precision_scheduler` (`verl/workers/config/precision_scheduler.py`,
 YAML in `verl/trainer/config/rollout/rollout.yaml`) is the source of truth for all vLLM-side
-settings. `verl/workers/rollout/vllm_rollout/precision_scheduler_env.py::to_vllm_env()` turns it
+settings. `verl/workers/rollout/vllm_rollout/precision_scheduler_env.py::to_vllm_env()` (implemented in `verl/workers/config/precision_scheduler.py` so the driver never imports the vLLM package) turns it
 into the env-var wire format; the key table lives in [`config.md`](config.md). The dict is
 injected twice: into the Ray job runtime env at `ray.init()`
 (`constants_ppo.get_ppo_ray_runtime_env(precision_scheduler=...)`, called from `main_ppo.py`) and
