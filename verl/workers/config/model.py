@@ -15,13 +15,13 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from omegaconf import MISSING
-from transformers import AutoConfig
 
 from verl.base_config import BaseConfig
 from verl.utils import hf_processor, hf_tokenizer
 from verl.utils.fs import copy_to_local
 from verl.utils.import_utils import import_external_libs
 from verl.utils.model import get_generation_config, update_model_config
+from verl.utils.model_compat.gemma4 import load_hf_config_with_model_compat
 
 __all__ = ["HFModelConfig", "MtpConfig"]
 
@@ -141,6 +141,10 @@ class HFModelConfig(BaseConfig):
     # TiledMLP configuration for memory-efficient MLP computation
     tiled_mlp: dict = field(default_factory=lambda: {"enabled": False, "num_shards": 4})
 
+    # Route Gemma-4 head_dim-512 global attention through dense FFPA (optional ffpa-attn
+    # dependency; requires use_remove_padding=False).  See verl/models/transformers/gemma4_ffpa.py.
+    gemma4_dense_ffpa: bool = False
+
     architectures: Optional[list[str]] = None
 
     mtp: MtpConfig = field(default_factory=MtpConfig)
@@ -181,9 +185,11 @@ class HFModelConfig(BaseConfig):
             self.local_hf_config_path, trust_remote_code=self.trust_remote_code
         )
 
-        # construct hf_config
+        # construct hf_config.  Per-model compatibility shims (currently only the
+        # Gemma-4 ``gemma4_unified`` text-decoder normalization) live in
+        # verl.utils.model_compat; every other model type goes straight to AutoConfig.
         attn_implementation = self.override_config.get("attn_implementation", "flash_attention_2")
-        self.hf_config = AutoConfig.from_pretrained(
+        self.hf_config = load_hf_config_with_model_compat(
             self.local_hf_config_path, trust_remote_code=self.trust_remote_code, attn_implementation=attn_implementation
         )
 

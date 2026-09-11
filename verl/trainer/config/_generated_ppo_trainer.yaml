@@ -420,6 +420,7 @@ actor_rollout_ref:
     tiled_mlp:
       enabled: false
       num_shards: 4
+    gemma4_dense_ffpa: false
     mtp:
       _target_: verl.workers.config.MtpConfig
       enable: false
@@ -633,6 +634,7 @@ critic:
     tiled_mlp:
       enabled: false
       num_shards: 4
+    gemma4_dense_ffpa: false
     mtp:
       _target_: verl.workers.config.MtpConfig
       enable: false

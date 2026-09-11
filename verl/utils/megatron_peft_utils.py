@@ -42,6 +42,21 @@ MEGATRON_TO_HF_MODULES = {
     "linear_weights_proj": ["weights_proj"],
 }
 
+# Architecture-specific mappings, keyed by HF ``model_type``.  These are only
+# consulted when the caller passes ``model_type``; other architectures keep the
+# identity mapping for these names (Nemotron-H Mamba mixers use ``in_proj`` /
+# ``out_proj`` verbatim, so an unconditional expansion would drop them).
+MEGATRON_TO_HF_MODULES_BY_MODEL_TYPE = {
+    # Qwen3.5 GatedDeltaNet: mcore ``self_attention.in_proj`` is exported by
+    # Megatron-Bridge as the four HF ``linear_attn.in_proj_{qkv,z,b,a}``.
+    "qwen3_5": {
+        "in_proj": ["in_proj_qkv", "in_proj_z", "in_proj_b", "in_proj_a"],
+        "out_proj": ["out_proj"],
+    },
+}
+for _alias in ("qwen3_5_moe", "qwen3_5_text", "qwen3_5_moe_text"):
+    MEGATRON_TO_HF_MODULES_BY_MODEL_TYPE[_alias] = MEGATRON_TO_HF_MODULES_BY_MODEL_TYPE["qwen3_5"]
+
 # Modules with stacked parameters that need .base_layer suffix in vLLM
 STACKED_PARAMS = [
     ".q_proj.weight",
@@ -66,6 +81,25 @@ STACKED_PARAMS = [
     ".wk.weight",
     ".weights_proj.weight",
 ]
+
+# Architecture-specific stacked params, keyed by HF ``model_type``; only applied by
+# ``add_base_layer_suffix`` for that model type so other Megatron+LoRA models keep
+# the vanilla list (``out_proj`` is a common module name outside these families).
+STACKED_PARAMS_BY_MODEL_TYPE = {
+    # Qwen3.5 GatedDeltaNet projections (vLLM merges in_proj_qkv/in_proj_z into
+    # in_proj_qkvz and in_proj_b/in_proj_a into in_proj_ba under base_layer).
+    "qwen3_5": [
+        ".in_proj_qkv.weight",
+        ".in_proj_z.weight",
+        ".in_proj_b.weight",
+        ".in_proj_a.weight",
+        ".out_proj.weight",
+    ],
+    # Nemotron-H Mamba mixers keep the HF names in_proj / out_proj verbatim.
+    "nemotron_h": [".in_proj.weight", ".out_proj.weight"],
+}
+for _alias in ("qwen3_5_moe", "qwen3_5_text", "qwen3_5_moe_text"):
+    STACKED_PARAMS_BY_MODEL_TYPE[_alias] = STACKED_PARAMS_BY_MODEL_TYPE["qwen3_5"]
 
 
 def count_adapter_parameters(model):
@@ -109,30 +143,40 @@ def print_adapter_info(model):
     print(f"{'=' * 60}\n")
 
 
-def convert_megatron_to_hf_target_modules(megatron_modules: list[str]) -> list[str]:
+def convert_megatron_to_hf_target_modules(megatron_modules: list[str], model_type: str | None = None) -> list[str]:
     """Convert megatron lora target modules to HF-style module names.
 
     Args:
-        megatron_modules: List of megatron-style module names.
+        megatron_modules: List of megatron-style module names.  Dotted wildcard
+            targets such as ``decoder.layers.*.mlp.linear_fc1`` are matched on
+            their last path component.
+        model_type: Optional HF ``model_type`` used to select architecture
+            specific mappings (see ``MEGATRON_TO_HF_MODULES_BY_MODEL_TYPE``).
 
     Returns:
         List of HF-style module names with duplicates removed.
     """
+    mapping = dict(MEGATRON_TO_HF_MODULES)
+    mapping.update(MEGATRON_TO_HF_MODULES_BY_MODEL_TYPE.get(model_type, {}))
     hf_target_modules = []
     for module in megatron_modules:
-        if module in MEGATRON_TO_HF_MODULES:
-            hf_target_modules.extend(MEGATRON_TO_HF_MODULES[module])
+        module_suffix = module.rsplit(".", 1)[-1]
+        if module in mapping:
+            hf_target_modules.extend(mapping[module])
+        elif module_suffix in mapping:
+            hf_target_modules.extend(mapping[module_suffix])
         else:
             hf_target_modules.append(module)
     # Remove duplicates while preserving order
     return list(dict.fromkeys(hf_target_modules))
 
 
-def build_peft_config_for_vllm(lora_config: dict) -> dict:
+def build_peft_config_for_vllm(lora_config: dict, model_type: str | None = None) -> dict:
     """Build a peft_config dict compatible with vLLM's PEFTHelper from megatron lora config.
 
     Args:
         lora_config: Megatron lora configuration dictionary.
+        model_type: Optional HF ``model_type`` for architecture specific target mappings.
 
     Returns:
         A dictionary compatible with vLLM's PEFTHelper.from_dict().
@@ -141,8 +185,8 @@ def build_peft_config_for_vllm(lora_config: dict) -> dict:
 
     target_modules = lora_config.get("target_modules", ["linear_qkv", "linear_proj", "linear_fc1", "linear_fc2"])
     exclude_modules = lora_config.get("exclude_modules", [])
-    hf_target_modules = convert_megatron_to_hf_target_modules(target_modules)
-    hf_exclude_modules = convert_megatron_to_hf_target_modules(exclude_modules)
+    hf_target_modules = convert_megatron_to_hf_target_modules(target_modules, model_type=model_type)
+    hf_exclude_modules = convert_megatron_to_hf_target_modules(exclude_modules, model_type=model_type)
 
     return {
         "task_type": TaskType.CAUSAL_LM,
@@ -166,10 +210,10 @@ def add_base_layer_suffix(
         params: Iterator of (param_name, tensor)
         model_type: The type of the model (e.g., "llama").
     """
-    stacked_params = STACKED_PARAMS
+    stacked_params = [*STACKED_PARAMS, *STACKED_PARAMS_BY_MODEL_TYPE.get(model_type, [])]
     # TODO: other models may have more special treatment, or integrate this into Megatron-Bridge
     if model_type == "llama":
-        stacked_params = [".embed_tokens.weight", *STACKED_PARAMS]
+        stacked_params = [".embed_tokens.weight", *stacked_params]
     for name, param in params:
         ending_suffix = ""
         for suffix in stacked_params:

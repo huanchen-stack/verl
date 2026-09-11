@@ -751,7 +751,9 @@ class MegatronEngine(BaseEngine):
         non_merge_lora_sync = self.peft_cls is not None and not self.model_config.lora.get("merge", False)
         adapter_only = base_sync_done and non_merge_lora_sync
         if non_merge_lora_sync:
-            peft_config = build_peft_config_for_vllm(self.model_config.lora)
+            peft_config = build_peft_config_for_vllm(
+                self.model_config.lora, model_type=getattr(self.model_config.hf_config, "model_type", None)
+            )
         # when lora adapter only, we only load adapter weights when base sync is done, otherwise load all weights
         load_megatron_model_to_gpu(self.module, load_grad=False, load_frozen_params=not adapter_only)
         if self.vanilla_bridge:

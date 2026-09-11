@@ -492,11 +492,23 @@ def index_select_tensor_dict(batch: TensorDict, indices: torch.Tensor | list[int
             if isinstance(tensor, torch.Tensor) and not tensor.is_nested:
                 data_dict[key] = tensor[indices]
             elif isinstance(tensor, torch.Tensor) and tensor.is_nested:
-                tensor_lst = tensor.unbind()  # for performance
-                selected_tensors = [tensor_lst[idx] for idx in indices]
-                data_dict[key] = nested_tensor_from_tensor_list(
-                    selected_tensors, ragged_idx=getattr(tensor, "_ragged_idx", tensor.dim() - 1)
-                )
+                ragged_idx = getattr(tensor, "_ragged_idx", tensor.dim() - 1)
+                try:
+                    tensor_lst = tensor.unbind()  # fast path
+                    selected_tensors = [tensor_lst[idx] for idx in indices]
+                except RuntimeError:
+                    # Some PyTorch versions cannot unbind jagged NestedTensors whose ragged
+                    # dimension is not the last sample dimension (e.g. Qwen3.5 M-RoPE
+                    # position_ids stored as [4, seq] per sample).  Slice the flat values
+                    # buffer with the offsets instead; this is exact and needs no padding.
+                    values = tensor.values()
+                    offsets = tensor.offsets().tolist()
+                    cat_dim = ragged_idx - 1
+                    selected_tensors = [
+                        values.narrow(cat_dim, offsets[idx], offsets[idx + 1] - offsets[idx])
+                        for idx in indices.tolist()
+                    ]
+                data_dict[key] = nested_tensor_from_tensor_list(selected_tensors, ragged_idx=ragged_idx)
             else:
                 # This handles NonTensorStack (indexable by batch dim) and NonTensorData (scalar metadata).
                 if tensor.shape:

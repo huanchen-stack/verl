@@ -22,6 +22,7 @@ import logging
 import os
 import warnings
 from dataclasses import dataclass
+from functools import wraps
 from typing import Any
 
 import torch
@@ -204,6 +205,18 @@ def get_hf_rope_theta(hf_config: PretrainedConfig) -> float:
     )
 
 
+def set_hf_rope_theta_if_required(hf_config: PretrainedConfig, provider: Any = None) -> None:
+    """Populate ``rope_theta`` unless the Megatron-Bridge provider does not use RoPE.
+
+    Hybrid Mamba/attention models such as Nemotron-H are built with
+    ``position_embedding_type == "none"`` and carry no RoPE base in their HF
+    config; looking one up would raise before the model is even constructed.
+    """
+    if provider is not None and getattr(provider, "position_embedding_type", None) == "none":
+        return
+    hf_config.rope_theta = get_hf_rope_theta(hf_config)
+
+
 @dataclass
 class McoreModuleWrapperConfig:
     """Configuration for Mcore module wrapper."""
@@ -213,6 +226,61 @@ class McoreModuleWrapperConfig:
     wrap_with_ddp: bool = True
     use_distributed_optimizer: bool = True
     use_megatron_fsdp: bool = False
+
+
+def enable_peft_recompute_input_grads_for_hybrid_stack(model):
+    """Keep adapter gradients alive through HybridStack activation recompute.
+
+    Megatron Bridge's PEFT recompute compatibility hook patches
+    ``TransformerBlock`` inputs. Nemotron-H is backed by ``HybridStack``
+    instead, so with PP=1 its frozen embedding output does not require grad.
+    PyTorch then skips the checkpoint backward entirely, leaving every LoRA
+    gradient at zero. Marking the stack input as requiring grad restores the
+    autograd edge without unfreezing any base-model parameter.
+
+    Registered as a Megatron-Bridge pre-wrap hook; a no-op unless a
+    ``HybridStack`` with ``recompute_granularity == "full"`` is present.
+    """
+
+    try:
+        from megatron.core.models.hybrid.hybrid_block import HybridStack
+    except ImportError:
+        return model
+
+    unwrapped = unwrap_model(model)
+    roots = unwrapped if isinstance(unwrapped, list) else [unwrapped]
+    patched_count = 0
+    for root in roots:
+        for module in root.modules():
+            if not isinstance(module, HybridStack):
+                continue
+            if getattr(module, "_verl_peft_recompute_input_grad_patched", False):
+                continue
+            if getattr(module.config, "recompute_granularity", None) != "full":
+                continue
+
+            original_forward = module.forward
+
+            @wraps(original_forward)
+            def patched_forward(hidden_states, *args, _original_forward=original_forward, **kwargs):
+                if (
+                    torch.is_tensor(hidden_states)
+                    and hidden_states.is_floating_point()
+                    and not hidden_states.requires_grad
+                ):
+                    hidden_states = hidden_states.detach().requires_grad_(True)
+                return _original_forward(hidden_states, *args, **kwargs)
+
+            module.forward = patched_forward
+            module._verl_peft_recompute_input_grad_patched = True
+            patched_count += 1
+
+    if patched_count and (not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0):
+        logger.info(
+            "[PEFT+Recompute] Patched HybridStack.forward to enable gradients on checkpoint inputs (%d stack(s)).",
+            patched_count,
+        )
+    return model
 
 
 def make_megatron_module(
@@ -226,9 +294,7 @@ def make_megatron_module(
     peft_cls: Any = None,
     peft_config: Any = None,
 ):
-    from verl.models.mcore.config_converter import get_hf_rope_theta
-
-    hf_config.rope_theta = get_hf_rope_theta(hf_config)
+    set_hf_rope_theta_if_required(hf_config, provider)
 
     if override_model_config is None:
         override_model_config = {}
@@ -268,6 +334,7 @@ def make_megatron_module(
                 from verl.utils.megatron_peft_utils import print_adapter_info
 
                 provider.register_pre_wrap_hook(create_peft_hook(peft_cls, training=True))
+                provider.register_pre_wrap_hook(enable_peft_recompute_input_grads_for_hybrid_stack)
 
                 adapter_path = peft_config.get("adapter_path", None)
                 if adapter_path:

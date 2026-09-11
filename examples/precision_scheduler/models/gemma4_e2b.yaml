@@ -1,0 +1,70 @@
+# Gemma-4 E2B (flagged tier) -- per-model overlay.
+#
+# Checkpoint pair:
+#   google/gemma-4-E2B-it-qat-q4_0-unquantized @ 6befbaca7398925921802abd1f277b495b78b738  (BF16, plain gemma4)
+#   google/gemma-4-E2B-it-qat-w4a16-ct        @ 971342c08f607aa7779983f6b5289778b5d271a7  (compressed-tensors W4A16)
+# (12B/31B checkpoints use the pre-release `gemma4_unified` model type; verl
+# normalizes them to the text decoder automatically, see
+# verl/utils/model_compat/gemma4.py.  E2B/E4B need no normalization.)
+#
+# Why this overlay is unusual:
+#   * Gemma-4 global-attention layers use head_dim 512, which FlashAttention-2
+#     cannot run on A100.  `gemma4_dense_ffpa: true` routes those layers through
+#     the optional ffpa-attn dense kernel (pip install ffpa-attn==0.2.4).  FFPA has
+#     no usable SM80 varlen backward, hence use_remove_padding=false, no dynamic
+#     batch size and a micro-batch of 1 (the archived runs used 1..4).
+#   * The padded path is what motivated chunked entropy on [batch, seq, vocab]
+#     logits and the singleton zero-copy logits in the FSDP engine.
+#   * Vision/audio towers wrap projections in Gemma4ClippableLinear, which PEFT
+#     cannot replace: exclude them from LoRA.
+#   * INT4 shadow attaches to MLP projections only (`mlp_only`): attention and
+#     the per-layer input modules stay BF16.
+#   * Archived Gemma-4 runs completed the BF16 and full-W4 baselines; the
+#     temporal-switch (tail-W4) CUDA-graph path was not validated for Gemma-4.
+data:
+  apply_chat_template_kwargs:
+    enable_thinking: true
+
+actor_rollout_ref:
+  model:
+    path: google/gemma-4-E2B-it-qat-q4_0-unquantized
+    trust_remote_code: true
+    override_config:
+      attn_implementation: flash_attention_2
+    use_remove_padding: false
+    gemma4_dense_ffpa: true
+    enable_activation_offload: true
+    lora_rank: 16
+    lora_alpha: 16
+    target_modules:
+      - q_proj
+      - k_proj
+      - v_proj
+      - o_proj
+      - gate_proj
+      - up_proj
+      - down_proj
+      - per_layer_input_gate
+      - per_layer_projection
+    exclude_modules: '^model\.(vision_tower|audio_tower)\..*'
+  actor:
+    use_dynamic_bsz: false
+    ppo_micro_batch_size_per_gpu: 1
+    entropy_from_logits_with_chunking: true
+    entropy_from_logits_chunk_size: 256
+    fsdp_config:
+      param_offload: true
+  ref:
+    log_prob_use_dynamic_bsz: false
+    log_prob_micro_batch_size_per_gpu: 1
+  rollout:
+    load_format: dummy
+    gpu_memory_utilization: 0.40
+    log_prob_use_dynamic_bsz: false
+    log_prob_micro_batch_size_per_gpu: 1
+    engine_kwargs:
+      vllm:
+        lora_target_modules: ${actor_rollout_ref.model.target_modules}
+    precision_scheduler:
+      int4_model: google/gemma-4-E2B-it-qat-w4a16-ct
+      int4_modules: mlp_only
