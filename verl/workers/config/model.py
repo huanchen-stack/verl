@@ -141,6 +141,10 @@ class HFModelConfig(BaseConfig):
     # TiledMLP configuration for memory-efficient MLP computation
     tiled_mlp: dict = field(default_factory=lambda: {"enabled": False, "num_shards": 4})
 
+    # Route Gemma-4 head_dim-512 global attention through dense FFPA (optional ffpa-attn
+    # dependency; requires use_remove_padding=False).  See verl/models/transformers/gemma4_ffpa.py.
+    gemma4_dense_ffpa: bool = False
+
     architectures: Optional[list[str]] = None
 
     mtp: MtpConfig = field(default_factory=MtpConfig)

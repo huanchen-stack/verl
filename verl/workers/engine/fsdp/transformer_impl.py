@@ -349,6 +349,7 @@ class FSDPEngine(BaseEngine):
                 ulysses_sp_size=self.ulysses_sequence_parallel_size,
                 use_fused_kernels=use_fused_kernels,
                 fused_kernels_backend=fused_kernels_backend,
+                gemma4_dense_ffpa=self.model_config.gemma4_dense_ffpa,
             )
 
             # some parameters may not in torch_dtype

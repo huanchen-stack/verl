@@ -76,6 +76,10 @@ tiled_mlp:
   # number of shards to split the input. Higher values reduce peak memory but may slightly impact performance.
   num_shards: 4
 
+# Route Gemma-4 head_dim-512 global attention through dense FFPA (optional dependency ffpa-attn==0.2.4).
+# Only for A100/SM80 where FlashAttention-2 cannot run head_dim 512; requires use_remove_padding=False.
+gemma4_dense_ffpa: False
+
 # MTP
 mtp:
 
