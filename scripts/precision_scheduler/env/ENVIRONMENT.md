@@ -218,3 +218,29 @@ with a compute process owned by another user or more than 2048 MiB in use, print
 own process group with `CUDA_VISIBLE_DEVICES` set, uses a private `RAY_TMPDIR`, kills the group
 and stops Ray on exit/timeout/Ctrl-C, and exits 4 if a process of ours is still on the GPUs
 afterwards. Tests that spawn vLLM in-process go through the same launcher.
+
+## 10. Greedy token identity across trees: measured nondeterminism
+
+The C0 acceptance smoke test (`tests/precision_scheduler/gpu/test_greedy_identity.py`) decodes 16
+GSM8K prompts greedily (64 tokens, temperature 0, `enforce_eager=False`, gpu_memory_utilization
+0.5) in the vanilla, dirty-with-flags-off and clean trees and asserts token identity. Measured on
+one A100 on 2026-09-11 (token dumps under the session scratchpad `c0/run2..run6`):
+
+| model | mode | vanilla vs vanilla (rerun) | vanilla vs dirty | vanilla vs clean |
+|---|---|---|---|---|
+| Qwen3.5-4B | 16 prompts batched | 4/16 prompts differ | 6/16 | 5/16 |
+| Qwen3.5-4B | `max_num_seqs=1` | 2/16 | not run | not run |
+| Qwen3.5-4B | `VLLM_BATCH_INVARIANT=1` | refused: "batch_invariant mode is not supported for GDN_ATTN" | | |
+| Phi-4-mini-reasoning | `max_num_seqs=1` + batch-invariant | 2/16 (cold-cache run vs warm) | run b == dirty exactly (0/16) | 2/16 vs run b |
+
+| Phi-4-mini-reasoning | `max_num_seqs=1` + batch-invariant + `enforce_eager` | **0/16** | **0/16** | **0/16** |
+
+With torch.compile and CUDA graphs on, two runs of the *same* vanilla tree already differ, so any
+cross-tree difference in that mode is within run-to-run noise (the divergences start late in the
+response, token 8-62, the signature of a bf16 numerics flip, not of a different code path; the
+residual source is the compiled/graph path, most likely inductor or Triton autotuning with cold vs
+warm caches). In eager batch-invariant mode decoding is reproducible and **vanilla, dirty with all
+flags off, and clean produce identical token ids on all 16 prompts (1024 tokens each)**. That is
+the mode the test uses; it deviates from the card's `enforce_eager=False` for exactly this reason.
+The script keeps `--max-num-seqs`, `--batch-invariant` and `--enforce-eager` switches, and the test
+asserts vanilla-vs-vanilla reproducibility first so that a regression fails with the right diagnosis.

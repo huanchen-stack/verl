@@ -216,11 +216,13 @@ GPU:
 
 ```bash
 G=$($PYTHON_BIN $ENV/check_env.py --expect clean --pick-gpus 1)
-PS_IDENTITY_MODEL=<HF_HOME>/hub/models--Qwen--Qwen3.5-4B/snapshots/<sha> \
+PS_IDENTITY_MODEL=<HF_HOME>/hub/models--microsoft--Phi-4-mini-reasoning/snapshots/<sha> \
 $ENV/run_gpu.sh --gpus $G --timeout 3600 -- $PYTHON_BIN -m pytest -p no:cacheprovider -q -m gpu_smoke \
     <WORK>/verl-clean/tests/precision_scheduler/gpu/test_greedy_identity.py
 nvidia-smi --query-compute-apps=pid,used_memory --format=csv -i $G     # must be empty afterwards
 ```
 
-On a host without the `dirty` reference checkout the test still needs all three kinds; edit
-`ENVS` in the test or point the `dirty` case of `activate.sh` at a third copy of `vllm-vanilla`.
+The test uses Phi-4-mini-reasoning in eager batch-invariant mode, the only configuration measured
+to be reproducible run-to-run (ENVIRONMENT.md section 10). On a host without the `dirty` reference checkout the test still
+needs all three kinds; edit `RUNS` in the test or point the `dirty` case of `activate.sh` at a
+third copy of `vllm-vanilla`.
