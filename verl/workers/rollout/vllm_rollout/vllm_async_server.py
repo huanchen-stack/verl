@@ -37,6 +37,7 @@ from vllm.v1.engine.async_llm import AsyncLLM
 from verl.plugin.platform import get_platform
 from verl.utils.config import omega_conf_to_dataclass
 from verl.utils.device import get_resource_name, get_visible_devices_keyword, is_torch_npu_available
+from verl.utils.fs import copy_to_local
 from verl.utils.net_utils import get_free_port, is_valid_ipv6_address
 from verl.utils.profiler import DistProfiler, build_vllm_profiler_args
 from verl.utils.tokenizer import normalize_token_ids
@@ -81,6 +82,26 @@ else:
 
 logger = logging.getLogger(__file__)
 logger.setLevel(logging.INFO)
+
+
+def _resolve_rollout_model_path(config: RolloutConfig, model_config: HFModelConfig) -> str:
+    """Base model served by vLLM: ``rollout.model_path`` if set, else the actor's local path."""
+    model_path = getattr(config, "model_path", None)
+    if model_path is None:
+        return model_config.local_path
+    return copy_to_local(model_path, use_shm=model_config.use_shm)
+
+
+def resolve_sleep_level(config: RolloutConfig, default_level: int) -> int:
+    """Sleep level to use: ``rollout.sleep_level`` when set (validated by the config
+    layer, which also applies the VERL_FORCE_VLLM_SLEEP_LEVEL fallback and the
+    dual-precision level-1 requirement), otherwise ``default_level``."""
+    level = getattr(config, "sleep_level", None)
+    if level is None:
+        return default_level
+    if level not in (1, 2):
+        raise ValueError(f"rollout.sleep_level must be 1 or 2, got {level!r}")
+    return level
 
 
 class vLLMHttpServer:
@@ -371,7 +392,8 @@ class vLLMHttpServer:
         if self.config.enable_rollout_routing_replay:
             args.update({"enable_return_routed_experts": True})
 
-        server_args = ["serve", self.model_config.local_path] + build_cli_args_from_config(args)
+        rollout_model_path = _resolve_rollout_model_path(self.config, self.model_config)
+        server_args = ["serve", rollout_model_path] + build_cli_args_from_config(args)
 
         if self.replica_rank == 0:
             pprint(server_args)
@@ -654,7 +676,7 @@ class vLLMHttpServer:
         if self.rollout_mode == RolloutMode.HYBRID:
             await self._sleep_hybrid()
         elif self.rollout_mode == RolloutMode.COLOCATED:
-            await self.engine.sleep(level=1)
+            await self.engine.sleep(level=resolve_sleep_level(self.config, 1))
         elif self.rollout_mode == RolloutMode.STANDALONE:
             logger.info("skip sleep in standalone mode")
 
@@ -982,6 +1004,7 @@ class vLLMHttpServer:
             sleep_level = 1
         else:
             sleep_level = 2
+        sleep_level = resolve_sleep_level(self.config, sleep_level)
         await self.engine.sleep(level=sleep_level)
         if _VLLM_VERSION >= version.parse("0.17.0"):
             await self.engine.reset_encoder_cache()

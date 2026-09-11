@@ -707,6 +707,11 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
 
         # 1. resume rollout memory (weights were released during sleep)
         if self.config.rollout.free_cache_engine:
+            # Long-sequence log-prob/backward phases can leave a large amount of
+            # inactive allocator cache behind.  Release it before vLLM remaps
+            # its sleeping weights, otherwise the two colocated engines can OOM
+            # even though the cached blocks are no longer live.
+            aggressive_empty_cache(force_sync=True)
             await self.rollout.resume(tags=["weights"])
         log_gpu_memory_usage("After resume weights", logger=logger)
 

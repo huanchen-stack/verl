@@ -19,6 +19,7 @@ import platform
 import signal
 import threading
 from collections.abc import Mapping
+from contextlib import contextmanager
 from types import MethodType
 from typing import Any, Literal, Optional, get_args
 
@@ -41,6 +42,32 @@ VLLM_LORA_NAME = "123"
 VLLM_LORA_PATH = "simon_lora_path"
 
 VLLM_ASCEND_REQUIRED_ENV_VARS = {"VLLM_ALL2ALL_BACKEND": "flashinfer_all2allv", "VLLM_ASCEND_ENABLE_NZ": "0"}
+
+try:
+    from vllm.model_executor.dual_precision import SHADOW_MODULE_NAME as DUAL_PRECISION_SHADOW_MODULE_NAME
+except ImportError:  # vLLM without the dual-precision residency package
+    DUAL_PRECISION_SHADOW_MODULE_NAME = "_vllm_dual_precision_int4_model"
+
+
+@contextmanager
+def _hide_dual_precision_shadow_model(model: torch.nn.Module):
+    """Hide the immutable INT4 shadow store from training weight-sync transforms.
+
+    ``process_weights_after_loading`` re-packs quantized weights in place (the
+    Marlin repack is not idempotent); the shadow store was packed once at load
+    and must not be visited again. Popping the submodule for the duration of
+    the call keeps every other module untouched.
+    """
+    modules = getattr(model, "_modules", None)
+    if not isinstance(modules, dict) or DUAL_PRECISION_SHADOW_MODULE_NAME not in modules:
+        yield
+        return
+
+    shadow_model = modules.pop(DUAL_PRECISION_SHADOW_MODULE_NAME)
+    try:
+        yield
+    finally:
+        modules[DUAL_PRECISION_SHADOW_MODULE_NAME] = shadow_model
 
 
 def _resolve_vllm_weight_sync_local_rank(worker_local_rank: int, parallel_config: Any) -> int:
@@ -302,7 +329,8 @@ class vLLMColocateWorkerExtension:
             from vllm.model_executor.model_loader.utils import process_weights_after_loading
 
             for model, model_config in self._iter_all_models_with_config():
-                process_weights_after_loading(model, model_config, self.device)
+                with _hide_dual_precision_shadow_model(model):
+                    process_weights_after_loading(model, model_config, self.device)
 
     def _apply_buffer_updates_all_models(self, buffer_updates, main_named_buffers):
         """Apply buffer updates to the main model and any synced MTP drafter.
