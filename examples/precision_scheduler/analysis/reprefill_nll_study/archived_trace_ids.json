@@ -1,0 +1,75 @@
+{
+  "description": "The 16 long-tail BF16 traces scored by the archived run qwen35_9b_w4qdq_longtail16 (Qwen3.5-9B, switch at output token 4096), in archived trace_index order. The scorer selects traces by this list instead of by path-derived sort order.",
+  "inputs": {
+    "eurus": "rollout/request-lifetime/results/eurus/results-tp1/qwen35-9b-eurus-n128-cap32k-tp1-bf16-stoppinghint-textdump/responses.jsonl",
+    "bigmath": "rollout/request-lifetime/results/bigmath/results-tp1/qwen35-9b-bigmath-n128-cap32k-tp1-bf16-textdump/responses.jsonl",
+    "gsm8k": "rollout/request-lifetime/results/gsm8k/results-tp1/qwen35-9b-gsm8k-n128-cap32k-tp1-bf16-textdump/responses.jsonl"
+  },
+  "inputs_root": "/data/huanchen/vllm/.codex-reports",
+  "traces": [
+    {
+      "dataset": "eurus",
+      "request_id": "req-0001-3eafa0bf"
+    },
+    {
+      "dataset": "eurus",
+      "request_id": "req-0004-061466e5"
+    },
+    {
+      "dataset": "bigmath",
+      "request_id": "req-0005-ad2b80b5"
+    },
+    {
+      "dataset": "eurus",
+      "request_id": "req-0015-b7211cbb"
+    },
+    {
+      "dataset": "gsm8k",
+      "request_id": "req-0019-afd2c630"
+    },
+    {
+      "dataset": "bigmath",
+      "request_id": "req-0023-3d00bfdd"
+    },
+    {
+      "dataset": "eurus",
+      "request_id": "req-0023-97eef780"
+    },
+    {
+      "dataset": "eurus",
+      "request_id": "req-0035-357f5e01"
+    },
+    {
+      "dataset": "eurus",
+      "request_id": "req-0043-c14cfddc"
+    },
+    {
+      "dataset": "bigmath",
+      "request_id": "req-0044-bf6a2b49"
+    },
+    {
+      "dataset": "gsm8k",
+      "request_id": "req-0046-e1501e67"
+    },
+    {
+      "dataset": "bigmath",
+      "request_id": "req-0054-b290179f"
+    },
+    {
+      "dataset": "eurus",
+      "request_id": "req-0063-46093dee"
+    },
+    {
+      "dataset": "eurus",
+      "request_id": "req-0072-ddf127ab"
+    },
+    {
+      "dataset": "eurus",
+      "request_id": "req-0079-0ef81e1e"
+    },
+    {
+      "dataset": "eurus",
+      "request_id": "req-0081-a7a0a297"
+    }
+  ]
+}

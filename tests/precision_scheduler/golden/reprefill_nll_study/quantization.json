@@ -1,0 +1,9 @@
+{
+  "modules": 248,
+  "parameters": 6918504448,
+  "relative_weight_rmse": 0.12301674828809042,
+  "max_absolute_weight_error": 0.07631140947341919,
+  "seconds": 1.9164938926696777,
+  "recipe": "symmetric RTN INT4, per-row groups of 128, dequantized to BF16",
+  "scope": "all nn.Linear weights inside language_model.model; embeddings, norms, vision tower, and LM head excluded"
+}
