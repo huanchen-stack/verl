@@ -1,0 +1,50 @@
+[
+  {
+    "point": 0,
+    "batch_size": 32,
+    "cap": 1024,
+    "total_tokens": 34102,
+    "response_tokens": 31876,
+    "order": 0,
+    "warmup": true,
+    "old_logprob_s": 15.233191224047914,
+    "ref_logprob_s": 5.767824950977229,
+    "inference_s": 21.001016175025143,
+    "training_s": 24.8195471749641,
+    "max_seq_len": 1135,
+    "gpu_visible": "6",
+    "max_memory_gib": 0.0
+  },
+  {
+    "point": 1,
+    "batch_size": 64,
+    "cap": 1024,
+    "total_tokens": 69118,
+    "response_tokens": 64676,
+    "order": 1,
+    "warmup": false,
+    "old_logprob_s": 12.776174523984082,
+    "ref_logprob_s": 11.617852049996145,
+    "inference_s": 24.394026573980227,
+    "training_s": 36.795390150975436,
+    "max_seq_len": 1135,
+    "gpu_visible": "6",
+    "max_memory_gib": 0.0
+  },
+  {
+    "point": 7,
+    "batch_size": 64,
+    "cap": 8192,
+    "total_tokens": 203396,
+    "response_tokens": 199379,
+    "order": 2,
+    "warmup": false,
+    "old_logprob_s": 36.63604828901589,
+    "ref_logprob_s": 33.994448813959025,
+    "inference_s": 70.63049710297491,
+    "training_s": 102.26022299099714,
+    "max_seq_len": 8260,
+    "gpu_visible": "6",
+    "max_memory_gib": 0.0
+  }
+]

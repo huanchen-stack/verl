@@ -1,0 +1,44 @@
+{
+  "n": 9,
+  "token_range": [
+    48971,
+    588734
+  ],
+  "batch_sizes": [
+    32,
+    64,
+    128
+  ],
+  "inference": {
+    "slope_s_per_token": 0.0003506424736647144,
+    "intercept_s": 0.026766913743403942,
+    "r2": 0.999850330047441,
+    "mape_pct": 0.9708663768090666,
+    "rmse_s": 0.6549841369038473
+  },
+  "training": {
+    "slope_s_per_token": 0.0005039208191747789,
+    "intercept_s": 0.9320732776810919,
+    "r2": 0.9998009850871554,
+    "mape_pct": 1.2979331565198458,
+    "rmse_s": 1.0854623860018426
+  },
+  "by_batch": {
+    "32": {
+      "n": 2,
+      "inference_mape_pct": 0.912126006235614,
+      "training_mape_pct": 1.3183693159632692
+    },
+    "64": {
+      "n": 4,
+      "inference_mape_pct": 1.0382115745123044,
+      "training_mape_pct": 1.4898452581468073
+    },
+    "128": {
+      "n": 3,
+      "inference_mape_pct": 0.9257678787240117,
+      "training_mape_pct": 1.0700973596005081
+    }
+  },
+  "definition": "inference=actor old-logprob with entropy + reference logprob; training=PPO actor update; predictor=total prompt+response tokens"
+}

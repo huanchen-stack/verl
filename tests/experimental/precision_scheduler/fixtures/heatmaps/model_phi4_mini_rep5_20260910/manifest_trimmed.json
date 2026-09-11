@@ -1,0 +1,27 @@
+{
+ "model": "/data/huggingface/hub/models--microsoft--Phi-4-mini-reasoning/snapshots/0e3b1e2d02ee478a3743abe3f629e9c0cb722e0a",
+ "batch_sizes": [
+  1,
+  2,
+  4,
+  8,
+  16,
+  32
+ ],
+ "seq_lens": [
+  1024,
+  2048,
+  3072,
+  4096,
+  5120,
+  6144,
+  7168,
+  8192,
+  12288,
+  16384
+ ],
+ "measurement_repetitions": 5,
+ "full_cudagraph_without_torch_compile": true,
+ "git_sha": "34e66a379d3794cf79a870cb4fad22d7ae407fde",
+ "status": "complete"
+}

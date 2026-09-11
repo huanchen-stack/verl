@@ -1,0 +1,34 @@
+[
+  {
+    "point": 0,
+    "batch_size": 32,
+    "cap": 1024,
+    "total_tokens": 34102,
+    "response_tokens": 31876,
+    "order": 0,
+    "warmup": true,
+    "old_logprob_s": 16.210825632093474,
+    "ref_logprob_s": 5.8491824209922925,
+    "inference_s": 22.060008053085767,
+    "training_s": 22.9558809340233,
+    "max_seq_len": 1135,
+    "gpu_visible": "4",
+    "max_memory_gib": 0.0
+  },
+  {
+    "point": 20,
+    "batch_size": 128,
+    "cap": 14575,
+    "total_tokens": 588734,
+    "response_tokens": 580240,
+    "order": 1,
+    "warmup": false,
+    "old_logprob_s": 106.94938238104805,
+    "ref_logprob_s": 99.87637552595697,
+    "inference_s": 206.82575790700503,
+    "training_s": 298.4471521739615,
+    "max_seq_len": 14683,
+    "gpu_visible": "4",
+    "max_memory_gib": 0.0
+  }
+]
