@@ -131,3 +131,8 @@ logs
 log
 outputs
 .history
+# Precision-scheduler project: report/evidence directories and stray wheels never enter a commit
+.codex-report/
+.codex-reports/
+evidence_bundle/
+*.whl
