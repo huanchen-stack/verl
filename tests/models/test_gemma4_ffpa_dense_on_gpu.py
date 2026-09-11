@@ -56,6 +56,7 @@ def test_dense_ffpa_matches_sdpa_reference_on_valid_positions():
     b = ref[valid].flatten()
     cosine = F.cosine_similarity(a, b, dim=0).item()
     max_abs = (a - b).abs().max().item()
+    print({"cosine": cosine, "max_abs": max_abs, "mean_abs": (a - b).abs().mean().item()})
     assert cosine > 0.999, cosine
     assert max_abs < 5e-2, max_abs
 
