@@ -20,7 +20,9 @@ recipes never set those variables by hand.  All defaults are OFF so a vanilla co
 behaves exactly like upstream verl.
 """
 
+import json
 import logging
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -35,10 +37,14 @@ __all__ = [
     "FORWARDED_ENV_PREFIXES",
     "FORWARDED_ENV_KEYS",
     "HOST_KEYS",
+    "INLINE_POLICY_PREFIXES",
     "LORA_KEYS",
     "collect_forwarded_env",
+    "is_policy_path",
+    "read_policy_revision",
     "resolve_sleep_level",
     "to_vllm_env",
+    "wait_for_policy_revision",
 ]
 
 
@@ -69,6 +75,11 @@ class PrecisionSchedulerConfig(BaseConfig):
             lets several independent Ray clusters share one host. ``null`` uses the Ray job id.
         force_shm_weight_transfer: Force the shared-memory weight-transfer path even where CUDA IPC works
             (``VERL_FORCE_SHM_WEIGHT_TRANSFER``).
+        require_policy_advance: vLLM strict mode: fail instead of warn when the policy file's revision did
+            not advance at a rollout boundary (``VLLM_DUAL_PRECISION_REQUIRE_POLICY_ADVANCE``).
+        policy_barrier_timeout_s: verl-only. When > 0 and ``policy`` is a file path, the trainer waits (up to
+            this many seconds) before every rollout after the first until ``calibration.policy_revision`` in
+            the policy file exceeds the revision seen at the previous rollout. 0 disables the barrier.
     """
 
     enable: bool = False
@@ -89,8 +100,14 @@ class PrecisionSchedulerConfig(BaseConfig):
     request_trace_log_tokens: bool = False
     zmq_namespace: Optional[str] = None
     force_shm_weight_transfer: bool = False
+    require_policy_advance: bool = False
+    policy_barrier_timeout_s: float = 0
 
     def __post_init__(self) -> None:
+        if self.policy_barrier_timeout_s < 0:
+            raise ValueError(
+                f"precision_scheduler.policy_barrier_timeout_s must be >= 0; got {self.policy_barrier_timeout_s!r}"
+            )
         if self.sleep_level is not None and self.sleep_level not in (1, 2):
             raise ValueError(f"precision_scheduler.sleep_level must be null, 1 or 2; got {self.sleep_level!r}")
         if self.enable and self.sleep_level == 2:
@@ -115,6 +132,7 @@ ENV_BY_KEY: dict[str, str] = {
     "online_observations": "VLLM_DUAL_PRECISION_ONLINE_OBSERVATIONS",
     "validate_shadow": "VLLM_DUAL_PRECISION_VALIDATE_SHADOW",
     "validate_lifecycle": "VLLM_DUAL_PRECISION_VALIDATE_LIFECYCLE",
+    "require_policy_advance": "VLLM_DUAL_PRECISION_REQUIRE_POLICY_ADVANCE",
     "request_trace_dir": "VERL_REQUEST_TRACE_DIR",
     "request_trace_log_tokens": "VERL_REQUEST_TRACE_LOG_TOKENS",
     "zmq_namespace": "VERL_ZMQ_NAMESPACE",
@@ -198,3 +216,48 @@ def collect_forwarded_env(environ: Mapping[str, str]) -> dict[str, str]:
         if key in FORWARDED_ENV_KEYS or key.startswith(FORWARDED_ENV_PREFIXES):
             forwarded[key] = value
     return forwarded
+
+
+# Inline policy specs of decision 6; anything else in ``policy`` is a path to an EMA policy JSON.
+INLINE_POLICY_PREFIXES: tuple[str, ...] = ("fixed_threshold:", "fixed_frontier:", "uniform_w4")
+
+
+def is_policy_path(policy: Optional[str]) -> bool:
+    """True when ``policy`` names a policy JSON file rather than an inline spec (or nothing)."""
+    if not policy:
+        return False
+    return not policy.strip().startswith(INLINE_POLICY_PREFIXES)
+
+
+def read_policy_revision(path: str) -> int:
+    """``calibration.policy_revision`` of the policy JSON at ``path`` (raises on a missing or malformed file)."""
+    with open(path, encoding="utf-8") as stream:
+        payload = json.load(stream)
+    calibration = payload.get("calibration") or {}
+    if "policy_revision" not in calibration:
+        raise ValueError(f"{path}: calibration.policy_revision missing")
+    return int(calibration["policy_revision"])
+
+
+def wait_for_policy_revision(path: str, last_revision: int, timeout_s: float, poll_s: float = 0.5) -> int:
+    """Block until the policy file's ``calibration.policy_revision`` exceeds ``last_revision``.
+
+    Polls every ``poll_s`` seconds; a missing or half-written file (atomic writers rename into
+    place, but be tolerant) counts as "not yet". Raises ``RuntimeError`` naming the path and
+    the stale revision once ``timeout_s`` elapsed. Returns the new revision.
+    """
+    deadline = time.monotonic() + float(timeout_s)
+    while True:
+        try:
+            revision = read_policy_revision(path)
+        except (OSError, ValueError, json.JSONDecodeError):
+            revision = None
+        if revision is not None and revision > last_revision:
+            return revision
+        if time.monotonic() >= deadline:
+            raise RuntimeError(
+                f"policy revision barrier timed out after {timeout_s}s: {path} still at revision "
+                f"{revision if revision is not None else 'unreadable'} (last seen {last_revision}); "
+                "the online policy watcher did not advance calibration.policy_revision before the next rollout"
+            )
+        time.sleep(poll_s)

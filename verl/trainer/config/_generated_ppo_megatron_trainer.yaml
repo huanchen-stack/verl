@@ -430,6 +430,8 @@ actor_rollout_ref:
       request_trace_log_tokens: false
       zmq_namespace: null
       force_shm_weight_transfer: false
+      require_policy_advance: false
+      policy_barrier_timeout_s: 0
   model:
     _target_: verl.workers.config.HFModelConfig
     path: ~/models/deepseek-llm-7b-chat
