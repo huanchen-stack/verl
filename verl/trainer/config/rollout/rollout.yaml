@@ -537,3 +537,10 @@ precision_scheduler:
 
   # Record sampled token ids in the finish rows of the trace (VERL_REQUEST_TRACE_LOG_TOKENS).
   request_trace_log_tokens: false
+
+  # Host-wide namespace of the colocated weight-transfer ZMQ socket (VERL_ZMQ_NAMESPACE); lets several
+  # independent Ray clusters (which reuse job ids) share one host. null uses the Ray job id.
+  zmq_namespace: null
+
+  # Force the shared-memory weight-transfer path even where CUDA IPC works (VERL_FORCE_SHM_WEIGHT_TRANSFER).
+  force_shm_weight_transfer: false

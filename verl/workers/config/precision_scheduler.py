@@ -34,6 +34,7 @@ __all__ = [
     "ENV_BY_KEY",
     "FORWARDED_ENV_PREFIXES",
     "FORWARDED_ENV_KEYS",
+    "HOST_KEYS",
     "LORA_KEYS",
     "collect_forwarded_env",
     "resolve_sleep_level",
@@ -64,6 +65,10 @@ class PrecisionSchedulerConfig(BaseConfig):
         validate_lifecycle: Validate request lifecycle bookkeeping (``VLLM_DUAL_PRECISION_VALIDATE_LIFECYCLE``).
         request_trace_dir: Directory for the per-request lifetime trace (``VERL_REQUEST_TRACE_DIR``).
         request_trace_log_tokens: Record sampled token ids in the trace (``VERL_REQUEST_TRACE_LOG_TOKENS``).
+        zmq_namespace: Host-wide namespace of the colocated weight-transfer socket (``VERL_ZMQ_NAMESPACE``);
+            lets several independent Ray clusters share one host. ``null`` uses the Ray job id.
+        force_shm_weight_transfer: Force the shared-memory weight-transfer path even where CUDA IPC works
+            (``VERL_FORCE_SHM_WEIGHT_TRANSFER``).
     """
 
     enable: bool = False
@@ -82,6 +87,8 @@ class PrecisionSchedulerConfig(BaseConfig):
     validate_lifecycle: bool = False
     request_trace_dir: Optional[str] = None
     request_trace_log_tokens: bool = False
+    zmq_namespace: Optional[str] = None
+    force_shm_weight_transfer: bool = False
 
     def __post_init__(self) -> None:
         if self.sleep_level is not None and self.sleep_level not in (1, 2):
@@ -110,10 +117,14 @@ ENV_BY_KEY: dict[str, str] = {
     "validate_lifecycle": "VLLM_DUAL_PRECISION_VALIDATE_LIFECYCLE",
     "request_trace_dir": "VERL_REQUEST_TRACE_DIR",
     "request_trace_log_tokens": "VERL_REQUEST_TRACE_LOG_TOKENS",
+    "zmq_namespace": "VERL_ZMQ_NAMESPACE",
+    "force_shm_weight_transfer": "VERL_FORCE_SHM_WEIGHT_TRANSFER",
 }
 
 # Keys emitted even when ``enable`` is false (the LoRA fast path is independent of dual precision).
 LORA_KEYS: tuple[str, ...] = ("lora_fast_path", "lora_dual_stream", "lora_fuse_packed")
+# Host-isolation keys: independent of ``enable``, emitted only when set (null / false are omitted).
+HOST_KEYS: tuple[str, ...] = ("zmq_namespace", "force_shm_weight_transfer")
 
 # Backward-compatible pass-through from the driver environment into Ray actors.
 FORWARDED_ENV_PREFIXES: tuple[str, ...] = ("VLLM_DUAL_PRECISION_", "VERL_")
@@ -130,23 +141,26 @@ def to_vllm_env(cfg: PrecisionSchedulerConfig) -> dict[str, str]:
     """Return the environment variables encoding ``cfg``.
 
     Rules: booleans become ``"1"``/``"0"``; ``None`` values are omitted; when ``enable`` is
-    false only the ``lora_*`` keys are emitted, so a vanilla config yields an empty dict
-    (the LoRA defaults ``false, false, true`` are emitted only when one of them is set
-    away from its default or ``enable`` is true).
+    false only the ``lora_*`` keys are emitted (and only if one of them differs from its
+    default), so a vanilla config yields an empty dict. The host-isolation keys
+    ``zmq_namespace`` / ``force_shm_weight_transfer`` are independent of ``enable`` and are
+    emitted only when set (``null`` / ``false`` are omitted).
     """
     env: dict[str, str] = {}
     if cfg.enable:
-        keys = list(ENV_BY_KEY)
+        keys = [key for key in ENV_BY_KEY if key not in HOST_KEYS]
     else:
         defaults = PrecisionSchedulerConfig()
-        if all(getattr(cfg, key) == getattr(defaults, key) for key in LORA_KEYS):
-            return env
-        keys = list(LORA_KEYS)
+        keys = [] if all(getattr(cfg, k) == getattr(defaults, k) for k in LORA_KEYS) else list(LORA_KEYS)
     for key in keys:
         value = getattr(cfg, key)
         if value is None:
             continue
         env[ENV_BY_KEY[key]] = _format(value)
+    if cfg.zmq_namespace:
+        env[ENV_BY_KEY["zmq_namespace"]] = str(cfg.zmq_namespace)
+    if cfg.force_shm_weight_transfer:
+        env[ENV_BY_KEY["force_shm_weight_transfer"]] = "1"
     return env
 
 

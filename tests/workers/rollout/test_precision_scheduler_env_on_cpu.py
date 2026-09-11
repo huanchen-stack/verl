@@ -96,6 +96,8 @@ def test_defaults_are_off_and_vanilla_emits_empty_env():
     assert cfg.validate_lifecycle is False
     assert cfg.request_trace_dir is None
     assert cfg.request_trace_log_tokens is False
+    assert cfg.zmq_namespace is None
+    assert cfg.force_shm_weight_transfer is False
     assert to_vllm_env(cfg) == {}
 
 
@@ -141,6 +143,19 @@ def test_headline_env_matches_archived_allowlist_golden():
     assert env["VERL_REQUEST_TRACE_LOG_TOKENS"] == "1"
     # sleep_level is not an env var: it is resolved inside the verl server actor.
     assert "sleep_level" not in ENV_BY_KEY
+    # Host-isolation keys are omitted when null / false even with enable=true.
+    assert "VERL_ZMQ_NAMESPACE" not in env and "VERL_FORCE_SHM_WEIGHT_TRANSFER" not in env
+
+
+def test_host_isolation_keys_emitted_independently_of_enable():
+    cfg = PrecisionSchedulerConfig(zmq_namespace="dynro_bf16_g3_12345", force_shm_weight_transfer=True)
+    assert to_vllm_env(cfg) == {
+        "VERL_ZMQ_NAMESPACE": "dynro_bf16_g3_12345",
+        "VERL_FORCE_SHM_WEIGHT_TRANSFER": "1",
+    }
+    assert to_vllm_env(PrecisionSchedulerConfig(zmq_namespace="")) == {}
+    env = to_vllm_env(PrecisionSchedulerConfig(enable=True, zmq_namespace="a/b"))
+    assert env["VERL_ZMQ_NAMESPACE"] == "a/b" and "VERL_FORCE_SHM_WEIGHT_TRANSFER" not in env
 
 
 def test_enabled_omits_null_keys():

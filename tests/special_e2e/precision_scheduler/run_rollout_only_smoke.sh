@@ -24,8 +24,6 @@ ray_tmp="${RAY_TMPDIR:-/tmp/ray_ps_smoke_$$}"
 
 mkdir -p "${run}/metrics" "${run}/rollouts" "${run}/traces" "${ray_tmp}"
 export VERL_FILE_LOGGER_ROOT="${run}/metrics"
-export VERL_ZMQ_NAMESPACE="ps_smoke_$$"
-export VERL_FORCE_SHM_WEIGHT_TRANSFER=1
 export HYDRA_FULL_ERROR=1
 export TOKENIZERS_PARALLELISM=false
 export TORCHINDUCTOR_CACHE_DIR="${run}/torchinductor_cache"
@@ -61,6 +59,8 @@ export TORCHINDUCTOR_CACHE_DIR="${run}/torchinductor_cache"
   actor_rollout_ref.rollout.precision_scheduler.enable=false \
   actor_rollout_ref.rollout.precision_scheduler.request_trace_dir="${run}/traces" \
   actor_rollout_ref.rollout.precision_scheduler.request_trace_log_tokens=true \
+  actor_rollout_ref.rollout.precision_scheduler.zmq_namespace="ps_smoke_$$" \
+  actor_rollout_ref.rollout.precision_scheduler.force_shm_weight_transfer=true \
   reward.custom_reward_function.path="${reward}" reward.custom_reward_function.name=compute_score \
   trainer.logger='["console","file"]' trainer.project_name=precision_scheduler_smoke \
   trainer.experiment_name=rollout_only_qwen35_4b trainer.n_gpus_per_node=1 trainer.nnodes=1 \

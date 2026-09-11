@@ -384,6 +384,8 @@ actor_rollout_ref:
       validate_lifecycle: false
       request_trace_dir: null
       request_trace_log_tokens: false
+      zmq_namespace: null
+      force_shm_weight_transfer: false
   model:
     _target_: verl.workers.config.HFModelConfig
     path: ~/models/deepseek-llm-7b-chat
