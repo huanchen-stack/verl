@@ -67,6 +67,21 @@ unified; the number of steps is `trainer.rollout_only_steps` bounded by
 `VERL_INITIAL_CHECKPOINT_COMPLETE step=0`; `trainer.exit_after_initial_checkpoint: true` returns
 right after it. A resumed run (`global_steps != 0`) is rejected.
 
+### Policy revision barrier
+
+C4's scheduler re-reads the policy JSON at every rollout boundary, and the archived EMA runs
+sometimes had the watcher lag a boundary (revision unchanged; vLLM only warns unless
+`require_policy_advance: true`). The primary guarantee lives in verl:
+`PPOTrainer._policy_revision_barrier()`, called at the top of `_add_batch_to_generate()` (the
+single generation entry shared by the sync, colocate-async and separate-async trainers, warmup
+batches included). With `precision_scheduler.enable: true`, a file-path `policy` (not an inline
+`fixed_threshold:` / `fixed_frontier:` / `uniform_w4` spec) and `policy_barrier_timeout_s > 0`,
+the first rollout records `calibration.policy_revision`; every later rollout calls
+`wait_for_policy_revision(path, last_revision, timeout_s, poll_s=0.5)` (pure, in
+`verl/workers/config/precision_scheduler.py`), which polls the file (tolerating a missing or
+half-written file) until the revision exceeds the last one and raises `RuntimeError` naming the
+path and the stale revision on timeout.
+
 ### Multi-experiment isolation
 
 * `trainer.ray_master_port_range: "start:end"` (env fallback `VERL_RAY_MASTER_PORT_RANGE`) is

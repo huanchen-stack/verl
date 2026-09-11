@@ -548,3 +548,12 @@ precision_scheduler:
 
   # Force the shared-memory weight-transfer path even where CUDA IPC works (VERL_FORCE_SHM_WEIGHT_TRANSFER).
   force_shm_weight_transfer: false
+
+  # vLLM strict mode: fail instead of warn when the policy file's revision did not advance at a rollout
+  # boundary (VLLM_DUAL_PRECISION_REQUIRE_POLICY_ADVANCE). The primary guarantee is the verl-side barrier below.
+  require_policy_advance: false
+
+  # verl-only policy revision barrier: when > 0 and `policy` is a file path, the trainer waits up to this many
+  # seconds before every rollout after the first until calibration.policy_revision in the policy file exceeds
+  # the revision seen at the previous rollout (RuntimeError on timeout). 0 disables the barrier.
+  policy_barrier_timeout_s: 0
