@@ -301,7 +301,9 @@ def distribution_metrics(
     midpoint = 0.5 * (reuse_p + replay_p)
     midpoint_lp = midpoint.clamp_min(1e-30).log()
     js = 0.5 * ((reuse_p * (reuse_lp - midpoint_lp)).sum(-1) + (replay_p * (replay_lp - midpoint_lp)).sum(-1)).mean()
-    eos = min(eos_token_id, bf.shape[-1] - 1)
+    if eos_token_id >= bf.shape[-1]:
+        raise ValueError(f"--eos-token-id {eos_token_id} is outside the vocabulary ({bf.shape[-1]} entries)")
+    eos = eos_token_id
     return {
         "bf16_nll": float(nll_bf),
         "reuse_nll": float(nll_reuse),
