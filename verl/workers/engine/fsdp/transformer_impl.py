@@ -1304,7 +1304,16 @@ class FSDPEngineWithLMHead(FSDPEngine):
                     logits = torch.nested.narrow(logits, 1, starts, seq_lengths, layout=torch.jagged)
                     logits_rmpad = cat_unbound_jagged(logits.unbind())
                     input_ids_rmpad_rolled = output_args["input_ids_rmpad_rolled"]
-                    log_probs = logprobs_from_logits(logits=logits_rmpad, labels=input_ids_rmpad_rolled)
+                    # With a single sample logits_rmpad is a view of output.logits, whose
+                    # storage the entropy / sum_pi_squared backward still reads; the
+                    # flash-attn cross-entropy in-place backward would corrupt it.
+                    # Mirror the rmpad-branch guard.
+                    inplace_backward = not (calculate_entropy or calculate_sum_pi_squared)
+                    log_probs = logprobs_from_logits(
+                        logits=logits_rmpad,
+                        labels=input_ids_rmpad_rolled,
+                        inplace_backward=inplace_backward,
+                    )
 
                     # Mirror the use_remove_padding=True branch (see verl#6293).
                     # No Ulysses SP gather here: this branch is the no-SP path
