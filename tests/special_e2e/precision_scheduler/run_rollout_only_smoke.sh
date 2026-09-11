@@ -6,13 +6,16 @@
 #         [REWARD_SCRIPT=<py>] bash run_rollout_only_smoke.sh
 # Run it under the decision-13 launcher (scripts/precision_scheduler/env/run_gpu.sh) so
 # CUDA_VISIBLE_DEVICES and RAY_TMPDIR are set and every process is killed afterwards.
-# Validate the result with validate_rollout_only_run.py.
+# Validate the result with tools/validate_rollout_run.py (validate_rollout_only_run.py delegates to it).
 set -euo pipefail
 
 run="${RUN_DIR:?set RUN_DIR}"
 model="${MODEL:-/data/huggingface/hub/models--Qwen--Qwen3.5-4B/snapshots/851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a}"
-data="${DATA_DIR:-/data/huanchen/verl/.codex-report/new-storyline-experiments/eos_hazard_fullstep_b64_cap16k/data/qwen35_4b/gsm8k}"
-reward="${REWARD_SCRIPT:-/data/huanchen/verl/.codex-report/new-storyline-experiments/eos_hazard_fullstep_b64_cap16k/universal_reward.py}"
+# Defaults: the in-repo prep output (examples/precision_scheduler/data/prepare_gsm8k.py, see
+# examples/precision_scheduler/README.md "Data") and the in-repo reward module.
+repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+data="${DATA_DIR:-${PS_DATA_ROOT:?set DATA_DIR or PS_DATA_ROOT}/gsm8k_messages_2048}"
+reward="${REWARD_SCRIPT:-${repo}/examples/precision_scheduler/rewards.py}"
 python_bin="${PYTHON_BIN:-python}"
 train_batch_size="${TRAIN_BATCH_SIZE:-8}"
 rollout_n="${ROLLOUT_N:-4}"
