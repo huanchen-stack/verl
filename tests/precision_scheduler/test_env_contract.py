@@ -315,3 +315,37 @@ def test_clean_requires_base_ancestry(ce, good_layout, monkeypatch):
     reasons = "\n".join(rep.failures)
     assert "does not descend from 6bdabbad5b" in reasons
     assert "does not descend from 2390a3f5cf" in reasons
+
+
+# ----------------------------------------------------------------------------- run_gpu.sh contract
+def _launcher_code_lines() -> list[str]:
+    text = (ENV_DIR / "run_gpu.sh").read_text()
+    return [ln for ln in text.splitlines() if ln.strip() and not ln.strip().startswith("#")]
+
+
+def test_run_gpu_never_calls_ray_stop():
+    # `ray stop --force` kills every Ray process of this user host-wide (all agents share one account);
+    # the process-group kill already covers Ray started under the private RAY_TMPDIR.
+    assert not any("ray stop" in ln for ln in _launcher_code_lines())
+    assert "never ray stop --force here" in (ENV_DIR / "run_gpu.sh").read_text()
+
+
+def test_run_gpu_watchdog_and_leftover_scoping():
+    code = "\n".join(_launcher_code_lines())
+    assert 'setsid "$@" &' in code, "child must run in its own session/process group"
+    assert "setsid bash -c 'sleep" in code, "watchdog must be its own process group (no orphaned sleep holding pipes)"
+    assert 'kill -- -"$WATCH"' in code
+    assert "ps -o sid=" in code, "leftovers are identified by session id, not by user (shared account)"
+
+
+def test_run_gpu_refuses_gpu_1_and_missing_gpus():
+    r = subprocess.run(
+        ["bash", str(ENV_DIR / "run_gpu.sh"), "--gpus", "1", "--", "true"], capture_output=True, text=True
+    )
+    assert r.returncode == 2 and "GPU 1 is never allowed" in r.stderr
+    r = subprocess.run(
+        ["bash", str(ENV_DIR / "run_gpu.sh"), "--gpus", "0,1", "--", "true"], capture_output=True, text=True
+    )
+    assert r.returncode == 2
+    r = subprocess.run(["bash", str(ENV_DIR / "run_gpu.sh"), "--", "true"], capture_output=True, text=True)
+    assert r.returncode == 2 and "--gpus required" in r.stderr

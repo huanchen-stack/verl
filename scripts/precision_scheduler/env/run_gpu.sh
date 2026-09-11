@@ -4,7 +4,7 @@
 # Usage:  run_gpu.sh --gpus 2[,3] [--timeout SECONDS] -- <command...>
 #
 # Runs <command> in its own process group with CUDA_VISIBLE_DEVICES set to the given GPUs, kills the
-# whole group on exit / timeout / Ctrl-C, stops any Ray it started (private RAY_TMPDIR), and fails
+# whole group on exit / timeout / Ctrl-C (Ray started under the private RAY_TMPDIR dies with it), and fails
 # with rc 4 if a process of ours is still on those GPUs afterwards. Refuses GPU 1 (rc 2) and refuses
 # to start on a GPU that already has a compute process or more than 2048 MiB in use (rc 3). Otherwise
 # the exit code is the command's. Pick free GPUs first with `check_env.py --pick-gpus N`.
@@ -25,21 +25,33 @@ export PYTHONDONTWRITEBYTECODE=1
 setsid "$@" & CHILD=$!
 cleanup() {
   kill -TERM -- -"$CHILD" 2>/dev/null; sleep 3; kill -KILL -- -"$CHILD" 2>/dev/null
-  ray stop --force >/dev/null 2>&1 || true
+  # never ray stop --force here: it kills every Ray process of this user host-wide
+  # (the process-group kill above already covers Ray started under the private RAY_TMPDIR)
   rm -rf "$RAY_TMPDIR"
-  sleep 2
-  for g in ${GPUS//,/ }; do
-    for p in $(nvidia-smi --query-compute-apps=pid --format=csv,noheader -i "$g"); do
-      if [ "$(ps -o user= -p "$p" 2>/dev/null)" = "$(id -un)" ]; then
-        echo "run_gpu.sh: leftover pid $p on GPU $g, killing" >&2; kill -KILL "$p" 2>/dev/null; LEFT=1
-      fi
+  # "Ours" means: in the session that setsid created for the child (all descendants inherit it),
+  # since every agent on this host shares one user account. Give the CUDA context a grace period
+  # to be released before declaring a leftover.
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    sleep 2; ours=""
+    for g in ${GPUS//,/ }; do
+      for p in $(nvidia-smi --query-compute-apps=pid --format=csv,noheader -i "$g"); do
+        [ "$(ps -o sid= -p "$p" 2>/dev/null | tr -d ' ')" = "$CHILD" ] && ours="$ours $p"
+      done
     done
+    [ -z "$ours" ] && break
+  done
+  for p in $ours; do
+    echo "run_gpu.sh: leftover pid $p of our session on GPUs $GPUS, killing" >&2; kill -KILL "$p" 2>/dev/null; LEFT=1
   done
 }
 trap 'cleanup; exit 130' INT TERM
-if [ "$TIMEOUT" -gt 0 ]; then ( sleep "$TIMEOUT"; echo "run_gpu.sh: timeout after ${TIMEOUT}s" >&2; kill -TERM -- -"$CHILD" 2>/dev/null ) & WATCH=$!; fi
+# The watchdog runs in its own process group so that killing it also kills its `sleep`; an orphaned
+# sleep would keep the caller's stdout/stderr pipe open until the full timeout elapsed.
+if [ "$TIMEOUT" -gt 0 ]; then
+  setsid bash -c 'sleep "$1"; echo "run_gpu.sh: timeout after $1s" >&2; kill -TERM -- -"$2" 2>/dev/null' _ "$TIMEOUT" "$CHILD" </dev/null & WATCH=$!
+fi
 wait "$CHILD"; RC=$?
-[ -n "${WATCH:-}" ] && kill "$WATCH" 2>/dev/null
+[ -n "${WATCH:-}" ] && { kill -- -"$WATCH" 2>/dev/null; kill "$WATCH" 2>/dev/null; }
 LEFT=0; cleanup
 [ "$LEFT" = 1 ] && { echo "run_gpu.sh: FAILED cleanup contract" >&2; exit 4; }
 exit $RC
