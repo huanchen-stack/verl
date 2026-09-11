@@ -15,8 +15,10 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import re
 from pathlib import Path
 from unittest.mock import patch
 
@@ -25,11 +27,15 @@ from omegaconf import OmegaConf
 
 from verl.trainer.constants_ppo import get_ppo_ray_runtime_env
 from verl.workers.config import PrecisionSchedulerConfig, RolloutConfig
+from verl.workers.config import precision_scheduler as ps_module
 from verl.workers.rollout.vllm_rollout.precision_scheduler_env import (
     ENV_BY_KEY,
     collect_forwarded_env,
+    is_policy_path,
+    read_policy_revision,
     resolve_sleep_level,
     to_vllm_env,
+    wait_for_policy_revision,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -52,7 +58,8 @@ ARCHIVED_ALLOWLIST_MINUS_DROPPED = frozenset(
     }
 )
 # Added by decision 6 (single policy flag), the continuous-EMA runs (reload / online observations, which the
-# archived allowlist forgot), the C1 fuse-packed knob, and the tracer's two config keys.
+# archived allowlist forgot), the C1 fuse-packed knob, the tracer's two config keys, and C4's strict
+# policy-advance mode.
 ADDED_BY_DECISIONS = frozenset(
     {
         "VLLM_DUAL_PRECISION_POLICY",
@@ -61,6 +68,7 @@ ADDED_BY_DECISIONS = frozenset(
         "VLLM_ROLLOUT_LORA_FUSE_PACKED",
         "VERL_REQUEST_TRACE_DIR",
         "VERL_REQUEST_TRACE_LOG_TOKENS",
+        "VLLM_DUAL_PRECISION_REQUIRE_POLICY_ADVANCE",
     }
 )
 
@@ -111,7 +119,7 @@ def test_rollout_config_hangs_precision_scheduler_from_yaml_and_dict():
     block = OmegaConf.to_container(yaml_cfg.precision_scheduler, resolve=True)
     assert block.pop("_target_") == "verl.workers.config.PrecisionSchedulerConfig"
     assert PrecisionSchedulerConfig(**block) == PrecisionSchedulerConfig()
-    assert set(block) == set(ENV_BY_KEY) | {"sleep_level"}
+    assert set(block) == set(ENV_BY_KEY) | {"sleep_level", "policy_barrier_timeout_s"}
 
 
 def test_disabled_emits_only_lora_keys_when_set():
@@ -240,3 +248,106 @@ def test_get_ppo_ray_runtime_env_forwards_config_and_environ():
         block = OmegaConf.create({"enable": True, "lora_fast_path": True})
         env_vars = get_ppo_ray_runtime_env(precision_scheduler=block)["env_vars"]
         assert env_vars["ROLLOUT_QLORA"] == "1"
+
+
+# --------------------------------------------------------------------------------------------
+# Policy revision barrier.
+# --------------------------------------------------------------------------------------------
+
+
+def _write_policy(path, revision):
+    path.write_text(json.dumps({"calibration": {"kind": "ema", "policy_revision": revision}}), encoding="utf-8")
+
+
+def test_require_policy_advance_and_barrier_timeout_keys():
+    cfg = PrecisionSchedulerConfig()
+    assert cfg.require_policy_advance is False and cfg.policy_barrier_timeout_s == 0
+    assert to_vllm_env(cfg) == {}
+    assert "VLLM_DUAL_PRECISION_REQUIRE_POLICY_ADVANCE" not in to_vllm_env(
+        PrecisionSchedulerConfig(require_policy_advance=True, policy_barrier_timeout_s=30)
+    )
+    env = to_vllm_env(PrecisionSchedulerConfig(enable=True, require_policy_advance=True, policy_barrier_timeout_s=30))
+    assert env["VLLM_DUAL_PRECISION_REQUIRE_POLICY_ADVANCE"] == "1"
+    assert not any("BARRIER" in key for key in env)
+    assert to_vllm_env(PrecisionSchedulerConfig(enable=True))["VLLM_DUAL_PRECISION_REQUIRE_POLICY_ADVANCE"] == "0"
+    with pytest.raises(ValueError):
+        PrecisionSchedulerConfig(policy_barrier_timeout_s=-1)
+
+
+def test_is_policy_path():
+    assert not is_policy_path("") and not is_policy_path(None)
+    assert not is_policy_path("fixed_frontier:8000") and not is_policy_path("fixed_threshold:8")
+    assert not is_policy_path("uniform_w4")
+    assert is_policy_path("/runs/policy.json") and is_policy_path("policy.json")
+
+
+def test_wait_for_policy_revision_returns_when_advanced(tmp_path, monkeypatch):
+    path = tmp_path / "policy.json"
+    _write_policy(path, 3)
+    assert read_policy_revision(str(path)) == 3
+    clock = {"t": 0.0}
+    monkeypatch.setattr(ps_module.time, "monotonic", lambda: clock["t"])
+
+    def fake_sleep(seconds):
+        clock["t"] += seconds
+        if clock["t"] >= 1.0:
+            _write_policy(path, 4)
+
+    monkeypatch.setattr(ps_module.time, "sleep", fake_sleep)
+    assert wait_for_policy_revision(str(path), 3, timeout_s=5.0) == 4
+    assert clock["t"] == pytest.approx(1.0)
+
+
+def test_wait_for_policy_revision_times_out_naming_path_and_revision(tmp_path, monkeypatch):
+    path = tmp_path / "policy.json"
+    _write_policy(path, 3)
+    clock = {"t": 0.0}
+    monkeypatch.setattr(ps_module.time, "monotonic", lambda: clock["t"])
+    monkeypatch.setattr(ps_module.time, "sleep", lambda s: clock.__setitem__("t", clock["t"] + s))
+    with pytest.raises(RuntimeError, match=rf"{re.escape(str(path))}.*revision 3.*last seen 3"):
+        wait_for_policy_revision(str(path), 3, timeout_s=2.0)
+    # A missing / half-written file counts as "not yet" and is named as unreadable on timeout.
+    clock["t"] = 0.0
+    path.write_text("{not json", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="unreadable"):
+        wait_for_policy_revision(str(path), 3, timeout_s=1.0)
+
+
+def test_trainer_barrier_records_first_then_waits(tmp_path, monkeypatch):
+    pytest.importorskip("ray")
+    pytest.importorskip("transfer_queue")
+    from verl.trainer.ppo.v1.trainer_sync import PPOTrainerSync as PPOTrainer
+
+    path = tmp_path / "policy.json"
+    _write_policy(path, 1)
+    trainer = object.__new__(PPOTrainer)
+    trainer.config = OmegaConf.create(
+        {
+            "actor_rollout_ref": {
+                "rollout": {
+                    "precision_scheduler": {"enable": True, "policy": str(path), "policy_barrier_timeout_s": 2.0}
+                }
+            }
+        }
+    )
+    clock = {"t": 0.0}
+    monkeypatch.setattr(ps_module.time, "monotonic", lambda: clock["t"])
+    monkeypatch.setattr(ps_module.time, "sleep", lambda s: clock.__setitem__("t", clock["t"] + s))
+    trainer._policy_revision_barrier()  # first rollout: record only
+    assert trainer._last_policy_revision == 1
+    with pytest.raises(RuntimeError, match="policy revision barrier"):
+        trainer._policy_revision_barrier()  # revision unchanged -> timeout
+    _write_policy(path, 2)
+    trainer._policy_revision_barrier()
+    assert trainer._last_policy_revision == 2
+
+    # Inline specs, enable=false and timeout 0 never touch the file.
+    for block in (
+        {"enable": True, "policy": "fixed_frontier:8000", "policy_barrier_timeout_s": 2.0},
+        {"enable": False, "policy": str(path), "policy_barrier_timeout_s": 2.0},
+        {"enable": True, "policy": str(path), "policy_barrier_timeout_s": 0},
+    ):
+        trainer = object.__new__(PPOTrainer)
+        trainer.config = OmegaConf.create({"actor_rollout_ref": {"rollout": {"precision_scheduler": block}}})
+        trainer._policy_revision_barrier()
+        assert not hasattr(trainer, "_last_policy_revision")

@@ -30,6 +30,8 @@ set them by hand. The table below is the single documentation of that wire forma
 | `request_trace_log_tokens` | `VERL_REQUEST_TRACE_LOG_TOKENS` | bool, `false` | Add sampled `token_ids` to trace finish rows. |
 | `zmq_namespace` | `VERL_ZMQ_NAMESPACE` | str, `null` | Namespace of the colocated weight-transfer socket (sanitised to `[A-Za-z0-9_-]`); independent of `enable`, omitted when null. |
 | `force_shm_weight_transfer` | `VERL_FORCE_SHM_WEIGHT_TRANSFER` | bool, `false` | Force the shared-memory weight-transfer path; independent of `enable`, omitted when false. |
+| `require_policy_advance` | `VLLM_DUAL_PRECISION_REQUIRE_POLICY_ADVANCE` | bool, `false` | vLLM strict mode: fail (instead of warn) when the policy revision did not advance at a rollout boundary. Emitted only when `enable` is true. |
+| `policy_barrier_timeout_s` | (none: verl-only) | float, `0` | Trainer-side barrier: wait up to this many seconds before each rollout after the first until `calibration.policy_revision` in the policy file advanced; `0` disables. |
 
 ## Emission rules
 

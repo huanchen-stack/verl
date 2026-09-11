@@ -1,0 +1,35 @@
+{
+  "created_unix": 1786526680.2688837,
+  "command": ".codex-report/reprefill-study/run_experiment_single_gpu.py --output .codex-report/reprefill-study/runs/qwen35_9b_w4qdq_longtail16 --limit 16 --switch-output-token 4096 --offsets 0 512 1024 2048 4096 --window 64 --chunk 256",
+  "cuda_visible_devices": "2",
+  "model": "/data/huggingface/hub/models--Qwen--Qwen3.5-9B/snapshots/c202236235762e1c871ad0ccb60c8ee5ba337b9a",
+  "model_config_sha256": "d0883072e01861ed0b2d47be3c16c36a8e81c224c7ffaa310c6558fb3f932b05",
+  "inputs": [
+    {
+      "path": "/data/huanchen/vllm/.codex-reports/rollout/request-lifetime/results/eurus/results-tp1/qwen35-9b-eurus-n128-cap32k-tp1-bf16-stoppinghint-textdump/responses.jsonl",
+      "sha256": "1bc63f32041fc4eb948f8e105e591304c5ef521bf12e8d0344fe3422dd1a7d2e"
+    },
+    {
+      "path": "/data/huanchen/vllm/.codex-reports/rollout/request-lifetime/results/bigmath/results-tp1/qwen35-9b-bigmath-n128-cap32k-tp1-bf16-textdump/responses.jsonl",
+      "sha256": "f08d678d60acab7f208396f14e32e13280b06fc44ebd59fb79cdfff4fab2f203"
+    },
+    {
+      "path": "/data/huanchen/vllm/.codex-reports/rollout/request-lifetime/results/gsm8k/results-tp1/qwen35-9b-gsm8k-n128-cap32k-tp1-bf16-textdump/responses.jsonl",
+      "sha256": "f4db45be53b1a4794cb8b951b5a612bd718ece44b82b77e4d6d45b48a0cb52a7"
+    }
+  ],
+  "num_traces": 16,
+  "switch_output_token": 4096,
+  "offsets": [
+    0,
+    512,
+    1024,
+    2048,
+    4096
+  ],
+  "window": 64,
+  "chunk": 256,
+  "group_size": 128,
+  "seed": 20260812,
+  "execution": "single GPU; BF16 state/logits staged to CPU disk before in-place W4 QDQ"
+}

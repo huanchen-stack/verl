@@ -26,10 +26,14 @@ from verl.workers.config.precision_scheduler import (
     FORWARDED_ENV_KEYS,
     FORWARDED_ENV_PREFIXES,
     HOST_KEYS,
+    INLINE_POLICY_PREFIXES,
     LORA_KEYS,
     collect_forwarded_env,
+    is_policy_path,
+    read_policy_revision,
     resolve_sleep_level,
     to_vllm_env,
+    wait_for_policy_revision,
 )
 
 __all__ = [
@@ -37,8 +41,12 @@ __all__ = [
     "FORWARDED_ENV_PREFIXES",
     "FORWARDED_ENV_KEYS",
     "HOST_KEYS",
+    "INLINE_POLICY_PREFIXES",
     "LORA_KEYS",
     "collect_forwarded_env",
+    "is_policy_path",
+    "read_policy_revision",
     "resolve_sleep_level",
     "to_vllm_env",
+    "wait_for_policy_revision",
 ]

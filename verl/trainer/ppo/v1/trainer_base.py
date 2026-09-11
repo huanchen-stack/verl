@@ -1193,8 +1193,35 @@ class PPOTrainer(ABC):
             if self.use_critic:
                 self.critic_wg.stop_profile()
 
+    def _policy_revision_barrier(self) -> None:
+        """Before every rollout after the first, wait until the online policy file advanced its revision.
+
+        Active only with ``precision_scheduler.enable``, a file-path ``policy`` and
+        ``policy_barrier_timeout_s > 0``. Shared by all trainer variants through _add_batch_to_generate.
+        """
+        from verl.workers.config.precision_scheduler import (
+            is_policy_path,
+            read_policy_revision,
+            wait_for_policy_revision,
+        )
+
+        ps_cfg = self.config.actor_rollout_ref.rollout.get("precision_scheduler", None)
+        if ps_cfg is None or not ps_cfg.get("enable", False):
+            return
+        policy = ps_cfg.get("policy", "")
+        timeout_s = float(ps_cfg.get("policy_barrier_timeout_s", 0) or 0)
+        if timeout_s <= 0 or not is_policy_path(policy):
+            return
+        last_revision = getattr(self, "_last_policy_revision", None)
+        if last_revision is None:
+            self._last_policy_revision = read_policy_revision(policy)
+            return
+        self._last_policy_revision = wait_for_policy_revision(policy, last_revision, timeout_s)
+        logger.info(f"policy revision barrier: {policy} advanced {last_revision} -> {self._last_policy_revision}")
+
     def _add_batch_to_generate(self):
         """Sample a batch from dataloader and add to AgentLoopManager."""
+        self._policy_revision_barrier()
         try:
             if self.train_dataloader_it is None:
                 self.train_dataloader_it = iter(self.train_dataloader)
