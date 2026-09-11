@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -157,6 +158,51 @@ def test_policy_json_and_local_paths(tmp_path):
     assert ps.enable is True and ps.policy == str(policy) and ps.int4_model == "/models/qwen-int4"
     assert cfg.actor_rollout_ref.model.path == "/models/qwen"
     assert cfg.trainer.rollout_only_steps == 3 and cfg.trainer.total_training_steps == 3
+
+
+EXPERIMENT_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+POLICY_NAMES = {
+    "bf16": "bf16",
+    "full_w4": "uniform_w4",
+    "tail_t8": "fixed_threshold_8",
+    "fixed_k8000": "fixed_frontier_8000",
+}
+
+
+def _experiment_name(overrides: list[str]) -> str:
+    names = [o.split("=", 1)[1] for o in overrides if o.startswith("trainer.experiment_name=")]
+    assert len(names) == 1, overrides
+    return names[0]
+
+
+@pytest.mark.parametrize("recipe", sorted(RECIPES))
+@pytest.mark.parametrize("policy", sorted(POLICIES) + ["json"])
+def test_experiment_name_is_derived_from_the_policy_kind(recipe, policy, tmp_path):
+    """Integration defect 2: a JSON policy path put '/' into trainer.experiment_name and the FileLogger
+    open() failed seven minutes into every .json launch. The name is the policy *kind* and its parameter,
+    never the path, sanitized to [A-Za-z0-9_.-]."""
+    if policy == "json":
+        path = tmp_path / "nested dir" / "policies" / "dynamic_policy_rev30@x.json"
+        path.parent.mkdir(parents=True)
+        path.write_text('{"schema_version": 6}')
+        env_policy, expected = str(path), "ema_dynamic_policy_rev30_x"
+    else:
+        env_policy, expected = policy, POLICY_NAMES[policy]
+    overrides, _ = dry_run(RECIPES[recipe], tmp_path, {"POLICY": env_policy, "MODEL_KEY": "qwen3_5_4b"})
+    name = _experiment_name(overrides)
+    assert EXPERIMENT_NAME_RE.match(name), name
+    assert name == f"qwen3_5_4b_{expected}"
+    cfg = compose_overrides(overrides)
+    assert cfg.trainer.experiment_name == name
+
+
+def test_experiment_name_override_is_kept_but_must_be_a_file_name(tmp_path):
+    overrides, _ = dry_run(RECIPES["full_step"], tmp_path, {"POLICY": "bf16", "EXPERIMENT_NAME": "arm-A.v2"})
+    assert _experiment_name(overrides) == "arm-A.v2"
+    env = dict(os.environ, DRY_RUN="1", RUN_DIR=str(tmp_path), POLICY="bf16", PS_DATA_ROOT=str(tmp_path))
+    env["EXPERIMENT_NAME"] = "a/b"
+    proc = subprocess.run(["bash", str(RECIPES["full_step"])], env=env, capture_output=True, text=True)
+    assert proc.returncode == 2 and "EXPERIMENT_NAME" in proc.stderr
 
 
 def test_extra_positional_overrides_win(tmp_path):
@@ -317,6 +363,7 @@ def test_continuous_ema_dry_run_uses_the_c6_watcher(tmp_path):
     assert cfg.trainer.rollout_only is True and cfg.trainer.rollout_only_steps == 5
     assert cfg.data.train_batch_size == 8 and cfg.actor_rollout_ref.rollout.max_num_seqs == 32
     assert ps.policy_barrier_timeout_s == 600
+    assert cfg.trainer.experiment_name == "qwen3_5_4b_ema_policy"
 
 
 def test_data_root_is_required(tmp_path):

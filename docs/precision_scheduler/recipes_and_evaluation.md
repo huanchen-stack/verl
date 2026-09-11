@@ -23,6 +23,13 @@ launcher `case` statements, hand-exported environment variables and copy-pasted 
 * **policy**: `ps_resolve_policy` turns `POLICY` into the `rollout.precision_scheduler.*` keys
   (table in the README; the vLLM wire format is C8's `to_vllm_env()`, documented in `config.md`).
   `bf16` sets only `enable=false`, so the vanilla path is byte-identical to upstream;
+* **experiment name**: `trainer.experiment_name` defaults to `<MODEL_KEY>_<policy name>` where the policy
+  name is derived from the policy *kind* (`bf16`, `uniform_w4`, `fixed_threshold_<N>`, `fixed_frontier_<K>`,
+  `ema_<JSON basename without .json>`) and sanitized to `[A-Za-z0-9_.-]`; an explicit `EXPERIMENT_NAME` is
+  refused outside that charset. The name is a file name (`metrics/<project>/<experiment>.jsonl`): the
+  2026-09-11 integration run's first `.json` launch died seven minutes in, after engine init, because the
+  policy path's `/` reached the FileLogger `open()`. `test_recipes_on_cpu.py` checks every recipe x policy,
+  including a JSON path with characters outside the charset;
 * **harness**: `request_trace_dir`, `request_trace_log_tokens`, `zmq_namespace`,
   `force_shm_weight_transfer`, `trainer.ray_master_port_range` (`47000 + 300 * gpu`),
   `trainer.stable_sample_uid`, `trainer.logger=[console,file]`, run-dir paths;

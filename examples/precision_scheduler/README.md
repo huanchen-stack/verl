@@ -118,7 +118,10 @@ Model overlays are selected with `hydra.searchpath=[file://examples/precision_sc
 `+models@_global_=<MODEL_KEY>`; see `models/README.md` for the per-model settings.
 
 Run directory contract: `STARTED` / `COMPLETE` / `FAILED`, `run_config.json`, `driver.log`,
-`metrics/<project>/<experiment>.jsonl` (FileLogger; the trainer runs with `cwd=$RUN_DIR/metrics`),
+`metrics/<project>/<experiment>.jsonl` (FileLogger; the trainer runs with `cwd=$RUN_DIR/metrics`;
+`<experiment>` defaults to `<MODEL_KEY>_<policy name>` with the policy name `bf16` / `uniform_w4` /
+`fixed_threshold_<N>` / `fixed_frontier_<K>` / `ema_<policy JSON basename>` sanitized to `[A-Za-z0-9_.-]`, so a
+policy path never becomes part of a file name; an explicit `EXPERIMENT_NAME` must match the same charset),
 `rollouts/<step>.jsonl`, `traces/request_lifetimes_replica000_node000.jsonl`, `checkpoints/global_step_<k>/`,
 `switch_observations.jsonl` (W4 policies), `logs/hydra/`.
 

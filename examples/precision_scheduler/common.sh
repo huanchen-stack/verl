@@ -16,7 +16,8 @@
 #   DATA_DIR           directory holding train.parquet and test.parquet (default $PS_DATA_ROOT/gsm8k_messages_2048;
 #                      PS_DATA_ROOT has no default: export it (README "Data") or set DATA_DIR)
 #   REWARD_FN          custom reward file (default examples/precision_scheduler/rewards.py)
-#   EXPERIMENT_NAME    trainer.experiment_name (default <model>_<policy>)
+#   EXPERIMENT_NAME    trainer.experiment_name (default <model>_<policy kind>, see ps_resolve_policy; it names the
+#                      FileLogger file metrics/<project>/<experiment>.jsonl, so only [A-Za-z0-9_.-] is accepted)
 #   PORT_BASE          torch-distributed master port range base (default 47000 + 300 * first visible GPU)
 #   DRY_RUN=1          print the resolved override list (one `OVERRIDE<TAB>...` line each) and exit 0
 #   RUN_TIMEOUT        GNU timeout duration for the trainer (default 12h)
@@ -39,7 +40,18 @@ ps_first_gpu() {
   echo "${first}"
 }
 
-# ps_resolve_policy <name> -> fills PS_POLICY_OVERRIDES (array) and PS_POLICY_KIND.
+# ps_sanitize_name <string> -> the string with every character outside [A-Za-z0-9_.-] replaced by '_'.
+# trainer.experiment_name becomes a file name (FileLogger metrics/<project>/<experiment>.jsonl): a '/'
+# in it (a policy JSON path, integration defect 2) made open() fail after engine init.
+ps_sanitize_name() {
+  local s="$1"
+  s="${s//[!A-Za-z0-9_.-]/_}"
+  echo "${s}"
+}
+
+# ps_resolve_policy <name> -> fills PS_POLICY_OVERRIDES (array), PS_POLICY_KIND and PS_POLICY_NAME
+# (the experiment-name component: bf16 | uniform_w4 | fixed_threshold_<N> | fixed_frontier_<K> |
+# ema_<policy JSON basename without .json>, sanitized).
 #   bf16      precision_scheduler.enable=false (vanilla vLLM LoRA path)
 #   full_w4   enable=true, policy=uniform_w4
 #   tail_t<N> enable=true, policy=fixed_threshold:<N>   (switch when the live batch drains to N)
@@ -53,16 +65,20 @@ ps_resolve_policy() {
   PS_POLICY_OVERRIDES=()
   case "${name}" in
     bf16)
-      PS_POLICY_KIND=bf16
+      PS_POLICY_KIND=bf16; PS_POLICY_NAME=bf16
       PS_POLICY_OVERRIDES+=("${ps}.enable=false")
       return 0 ;;
-    full_w4)   PS_POLICY_KIND=uniform_w4; spec="uniform_w4" ;;
+    full_w4)   PS_POLICY_KIND=uniform_w4; PS_POLICY_NAME=uniform_w4; spec="uniform_w4" ;;
     tail_t*)   PS_POLICY_KIND=fixed_threshold; spec="fixed_threshold:${name#tail_t}"
-               [[ "${name#tail_t}" =~ ^[0-9]+$ ]] || ps_die "bad POLICY ${name}" ;;
+               [[ "${name#tail_t}" =~ ^[0-9]+$ ]] || ps_die "bad POLICY ${name}"
+               PS_POLICY_NAME="fixed_threshold_${name#tail_t}" ;;
     fixed_k*)  PS_POLICY_KIND=fixed_frontier; spec="fixed_frontier:${name#fixed_k}"
-               [[ "${name#fixed_k}" =~ ^[0-9]+$ ]] || ps_die "bad POLICY ${name}" ;;
+               [[ "${name#fixed_k}" =~ ^[0-9]+$ ]] || ps_die "bad POLICY ${name}"
+               PS_POLICY_NAME="fixed_frontier_${name#fixed_k}" ;;
     *.json)    PS_POLICY_KIND=lookup_table; spec="${name}"
-               [[ -f "${name}" ]] || ps_die "policy JSON not found: ${name}" ;;
+               [[ -f "${name}" ]] || ps_die "policy JSON not found: ${name}"
+               local base; base="$(basename "${name}")"
+               PS_POLICY_NAME="ema_$(ps_sanitize_name "${base%.json}")" ;;
     *) ps_die "unknown POLICY '${name}' (bf16 | full_w4 | tail_t<N> | fixed_k<K> | <policy.json>)" ;;
   esac
   PS_POLICY_OVERRIDES+=(
@@ -93,7 +109,13 @@ ps_common_overrides() {
   local port_base="${PORT_BASE:-$((47000 + gpu * 300))}"
   local ray_tmp="${RAY_TMPDIR:-${RUN_DIR}/ray_tmp}"
   local ps="actor_rollout_ref.rollout.precision_scheduler"
-  PS_EXPERIMENT_NAME="${EXPERIMENT_NAME:-${model_key}_${POLICY:-bf16}}"
+  if [[ -n "${EXPERIMENT_NAME:-}" ]]; then
+    [[ "${EXPERIMENT_NAME}" =~ ^[A-Za-z0-9_.-]+$ ]] || ps_die "EXPERIMENT_NAME must match [A-Za-z0-9_.-]+ (it names a file): '${EXPERIMENT_NAME}'"
+    PS_EXPERIMENT_NAME="${EXPERIMENT_NAME}"
+  else
+    [[ -n "${PS_POLICY_NAME:-}" ]] || ps_die "ps_common_overrides called before ps_resolve_policy"
+    PS_EXPERIMENT_NAME="$(ps_sanitize_name "${model_key}")_${PS_POLICY_NAME}"
+  fi
   PS_COMMON_OVERRIDES=(
     "hydra.searchpath=[file://${PS_EXAMPLES_DIR}]"
     "+models@_global_=${model_key}"
