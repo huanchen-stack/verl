@@ -153,7 +153,7 @@ resolvable cohort regardless of timing.
 ## Tests
 
 ```bash
-python -m pytest -p no:cacheprovider -q tests/experimental/precision_scheduler   # 41 CPU tests
+python -m pytest -p no:cacheprovider -q tests/experimental/precision_scheduler   # 40 CPU tests
 ```
 
 Goldens skip nothing: every oracle is a trimmed committed fixture; when the archive is
