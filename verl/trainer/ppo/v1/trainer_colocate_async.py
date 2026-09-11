@@ -49,6 +49,7 @@ class PPOTrainerColocateAsync(PPOTrainer):
             self.checkpoint_manager.update_weights(self.global_steps)
             # resume generation
             self.checkpoint_manager.resume_generation_replicas()
+        self.timing_raw.update(getattr(self.checkpoint_manager, "last_update_timing", None) or {})
 
     def on_sample_end(self):
         # abort all unfinished requests and pause generation

@@ -70,6 +70,30 @@ def _hide_dual_precision_shadow_model(model: torch.nn.Module):
         modules[DUAL_PRECISION_SHADOW_MODULE_NAME] = shadow_model
 
 
+def parse_bool_env(value: Optional[str], default: bool = False) -> bool:
+    """Interpret an environment-variable string as a boolean (``1/true/yes/on`` are true)."""
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def weight_sync_namespace(environ: Mapping[str, str], default: str) -> str:
+    """Namespace of the colocated weight-transfer ZMQ socket.
+
+    Independent local Ray clusters commonly reuse the same job id (``01000000``), so a launcher
+    running several experiments on one host sets ``VERL_ZMQ_NAMESPACE``. The value is sanitised
+    to ``[A-Za-z0-9_-]`` so it is always a valid socket file name; sender (``ServerAdapter``) and
+    receiver (``vLLMColocateWorkerExtension``) must call this same function.
+    """
+    namespace = environ.get("VERL_ZMQ_NAMESPACE") or default
+    return "".join(char if char.isalnum() or char in "-_" else "_" for char in str(namespace))
+
+
+def zmq_handle_for(namespace: str, replica_rank: int, local_rank: int) -> str:
+    """IPC socket path of the colocated weight-transfer channel (frozen format)."""
+    return f"ipc:///tmp/rl-colocate-zmq-{namespace}-replica-{replica_rank}-rank-{local_rank}.sock"
+
+
 def _resolve_vllm_weight_sync_local_rank(worker_local_rank: int, parallel_config: Any) -> int:
     worker_local_rank = int(worker_local_rank)
     if parallel_config is None:
@@ -389,11 +413,11 @@ class vLLMColocateWorkerExtension:
         side and avoid cross-job collisions on shared hosts.
         """
         replica_rank = os.environ.get("VERL_REPLICA_RANK", "0")
-        job_id = os.environ.get("VERL_RAY_JOB_ID", "0")
+        namespace = weight_sync_namespace(os.environ, default=os.environ.get("VERL_RAY_JOB_ID", "0"))
         vllm_config = getattr(self.model_runner, "vllm_config", None)
         parallel_config = getattr(vllm_config, "parallel_config", None)
         local_rank = _resolve_vllm_weight_sync_local_rank(self.local_rank, parallel_config)
-        return f"ipc:///tmp/rl-colocate-zmq-{job_id}-replica-{replica_rank}-rank-{local_rank}.sock"
+        return zmq_handle_for(namespace, replica_rank, local_rank)
 
 
 class SuppressSignalInThread:

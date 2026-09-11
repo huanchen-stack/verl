@@ -11,7 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import os
 import warnings
 from dataclasses import dataclass, field
 from typing import Optional
@@ -22,6 +21,7 @@ from verl.base_config import BaseConfig
 from verl.utils.profiler import ProfilerConfig
 from verl.workers.config.disaggregation import DisaggregationConfig
 from verl.workers.config.model import MtpConfig
+from verl.workers.config.precision_scheduler import PrecisionSchedulerConfig
 
 __all__ = [
     "SamplingConfig",
@@ -210,15 +210,6 @@ class RolloutConfig(BaseConfig):
     # while vLLM serves a different base checkpoint (e.g. an INT4 rollout model).
     model_path: Optional[str] = None
 
-    # vLLM sleep level between rollouts: 1 offloads weights to CPU and restores
-    # them on wake-up, 2 discards them and relies on the next weight sync.
-    # None keeps the engine default (1 for LoRA-as-adapter / MTP / NPU and in
-    # colocated mode, otherwise 2); the VERL_FORCE_VLLM_SLEEP_LEVEL env var is
-    # the fallback when unset. Dual precision rollout requires level 1: the
-    # INT4 shadow store is never re-synced from the trainer (see
-    # resolve_sleep_level).
-    sleep_level: Optional[int] = None
-
     # note that the logprob computation should belong to the actor
     log_prob_micro_batch_size: Optional[int] = None
     log_prob_micro_batch_size_per_gpu: Optional[int] = None
@@ -286,25 +277,12 @@ class RolloutConfig(BaseConfig):
 
     disaggregation: DisaggregationConfig = field(default_factory=DisaggregationConfig)
 
+    # Rollout precision scheduler (dual-precision BF16/INT4 rollout, LoRA fast path, request tracing).
+    # Translated into vLLM env vars for the server actor; see docs/precision_scheduler/config.md.
+    precision_scheduler: PrecisionSchedulerConfig = field(default_factory=PrecisionSchedulerConfig)
+
     def __post_init__(self):
         """Validate the rollout config"""
-        if self.sleep_level is None:
-            forced = os.getenv("VERL_FORCE_VLLM_SLEEP_LEVEL")
-            if forced:
-                # Config layer is the only place env vars are read; the value
-                # then flows through the dataclass like any YAML key.
-                object.__setattr__(self, "sleep_level", int(forced))
-        if self.sleep_level not in (None, 1, 2):
-            raise ValueError(f"rollout.sleep_level must be 1, 2 or null, got {self.sleep_level!r}")
-        if os.getenv("VLLM_DUAL_PRECISION_ROLLOUT", "0") == "1":
-            if self.sleep_level == 2:
-                raise ValueError(
-                    "rollout.sleep_level=2 discards the dual precision INT4 shadow store, "
-                    "which is never re-synced from the trainer; use sleep_level=1."
-                )
-            if self.sleep_level is None:
-                object.__setattr__(self, "sleep_level", 1)
-
         # Deprecation warning for mode field - only async mode is supported
         if self.mode == "sync":
             raise ValueError(
@@ -366,6 +344,22 @@ class RolloutConfig(BaseConfig):
                 self,
                 "disaggregation",
                 DisaggregationConfig(**OmegaConf.to_container(self.disaggregation, resolve=True)),
+            )
+
+        if isinstance(self.precision_scheduler, dict):
+            object.__setattr__(self, "precision_scheduler", PrecisionSchedulerConfig(**self.precision_scheduler))
+        elif not isinstance(self.precision_scheduler, PrecisionSchedulerConfig):
+            from omegaconf import DictConfig, OmegaConf
+
+            if not isinstance(self.precision_scheduler, DictConfig):
+                raise TypeError(
+                    f"rollout.precision_scheduler must be dict, DictConfig, or PrecisionSchedulerConfig; "
+                    f"got {type(self.precision_scheduler).__name__}."
+                )
+            object.__setattr__(
+                self,
+                "precision_scheduler",
+                PrecisionSchedulerConfig(**OmegaConf.to_container(self.precision_scheduler, resolve=True)),
             )
 
         if self.disaggregation.enabled and self.name != "sglang":

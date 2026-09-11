@@ -64,6 +64,10 @@ class SingleTurnAgentLoop(AgentLoopBase):
         metrics = {}
         with simple_timer("generate_sequences", metrics):
             request_id = f"det-{priority}" if getattr(self.rollout_config, "full_determinism", False) else uuid4().hex
+            # Stable "<uid>_<session_id>" id for the request lifetime trace; the engine id stays request_id.
+            trace_kwargs = {}
+            if "uid" in kwargs and "session_id" in kwargs:
+                trace_kwargs["trace_request_id"] = f"{kwargs['uid']}_{kwargs['session_id']}"
             output: TokenOutput = await self.server_manager.generate(
                 request_id=request_id,
                 prompt_ids=prompt_ids,
@@ -73,6 +77,7 @@ class SingleTurnAgentLoop(AgentLoopBase):
                 video_data=videos,
                 mm_processor_kwargs=mm_processor_kwargs,
                 priority=priority,
+                **trace_kwargs,
             )
         if metrics.get("num_preempted") is None:
             metrics["num_preempted"] = output.num_preempted if output.num_preempted is not None else -1

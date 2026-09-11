@@ -1,0 +1,186 @@
+diff --git a/tests/v1/sample/test_prompt_logprob_extra_ids.py b/tests/v1/sample/test_prompt_logprob_extra_ids.py
+new file mode 100644
+index 0000000..beec9f3
+--- /dev/null
++++ b/tests/v1/sample/test_prompt_logprob_extra_ids.py
+@@ -0,0 +1,51 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++"""CPU tests for inject_extra_prompt_logprobs (VLLM_PROMPT_LOGPROB_EXTRA_TOKEN_IDS)."""
++
++import pytest
++import torch
++
++from vllm.v1.sample.prompt_logprob_extra import inject_extra_prompt_logprobs
++
++
++def _gathered(raw: torch.Tensor, k: int, targets: list[int]):
++    """Mimic Sampler.gather_logprobs: column 0 is the target token, then the top-k."""
++    topk_lp, topk_ids = raw.topk(k, dim=-1)
++    tgt = torch.tensor(targets)
++    token_ids = torch.cat([tgt[:, None], topk_ids], dim=-1)
++    logprobs = torch.cat([raw.gather(-1, tgt[:, None]), topk_lp], dim=-1)
++    return token_ids, logprobs
++
++
++def test_replaces_last_columns_with_exact_logprobs():
++    torch.manual_seed(0)
++    raw = torch.log_softmax(torch.randn(4, 16), dim=-1)
++    token_ids, logprobs = _gathered(raw, k=5, targets=[1, 2, 3, 4])
++    before_ids, before_lp = token_ids.clone(), logprobs.clone()
++
++    out_ids, out_lp = inject_extra_prompt_logprobs(
++        token_ids, logprobs, raw, [11, 7], num_prompt_logprobs=5
++    )
++
++    assert out_ids is token_ids and out_lp is logprobs  # in place
++    assert torch.equal(out_ids[:, :-2], before_ids[:, :-2])
++    assert torch.equal(out_lp[:, :-2], before_lp[:, :-2])
++    assert torch.equal(out_ids[:, -2:], torch.tensor([[11, 7]] * 4))
++    assert torch.allclose(out_lp[:, -2:], raw[:, [11, 7]])
++
++
++def test_empty_extra_ids_is_noop():
++    raw = torch.log_softmax(torch.randn(2, 8), dim=-1)
++    token_ids, logprobs = _gathered(raw, k=3, targets=[0, 1])
++    before = token_ids.clone(), logprobs.clone()
++    inject_extra_prompt_logprobs(token_ids, logprobs, raw, [], num_prompt_logprobs=3)
++    assert torch.equal(token_ids, before[0]) and torch.equal(logprobs, before[1])
++
++
++def test_rejects_more_ids_than_prompt_logprobs():
++    raw = torch.log_softmax(torch.randn(2, 8), dim=-1)
++    token_ids, logprobs = _gathered(raw, k=1, targets=[0, 1])
++    with pytest.raises(ValueError):
++        inject_extra_prompt_logprobs(
++            token_ids, logprobs, raw, [3, 4], num_prompt_logprobs=1
++        )
+diff --git a/vllm/envs.py b/vllm/envs.py
+index c12e3ca..8636650 100755
+--- a/vllm/envs.py
++++ b/vllm/envs.py
+@@ -278,6 +278,7 @@ if TYPE_CHECKING:
+     VLLM_XPU_ENABLE_XPU_GRAPH: bool = False
+     VLLM_XPU_USE_SAMPLER_KERNEL: bool = True
+     VLLM_LORA_ENABLE_DUAL_STREAM: bool = False
++    VLLM_PROMPT_LOGPROB_EXTRA_TOKEN_IDS: list[int] = []
+     VLLM_GPU_NIC_PCIE_MAPPING: str = ""
+     VLLM_NIC_SELECTION_VARS: str = ""
+ 
+@@ -1972,6 +1973,15 @@ environment_variables: dict[str, Callable[[], Any]] = {
+     "VLLM_LORA_ENABLE_DUAL_STREAM": lambda: bool(
+         int(os.getenv("VLLM_LORA_ENABLE_DUAL_STREAM", "0"))
+     ),
++    # Comma-separated token ids whose exact prompt logprobs replace the last
++    # len(ids) top-k columns of every prompt-logprob row (diagnostics for the
++    # EOS-hazard / layer-sensitivity studies). Requires prompt_logprobs >= len(ids).
++    # Default empty: prompt logprobs are unchanged.
++    "VLLM_PROMPT_LOGPROB_EXTRA_TOKEN_IDS": lambda: [
++        int(token_id)
++        for token_id in os.getenv("VLLM_PROMPT_LOGPROB_EXTRA_TOKEN_IDS", "").split(",")
++        if token_id.strip()
++    ],
+     # If set to 1, use Python spinloop extension to poll in a more efficient
+     # way when using the mp backend.
+     "VLLM_USE_SPINLOOP_EXT": lambda: bool(int(os.getenv("VLLM_USE_SPINLOOP_EXT", "0"))),
+diff --git a/vllm/v1/sample/prompt_logprob_extra.py b/vllm/v1/sample/prompt_logprob_extra.py
+new file mode 100644
+index 0000000..d9f3b80
+--- /dev/null
++++ b/vllm/v1/sample/prompt_logprob_extra.py
+@@ -0,0 +1,61 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++"""Opt-in diagnostics: exact prompt logprobs for a fixed set of token ids.
++
++Behind ``VLLM_PROMPT_LOGPROB_EXTRA_TOKEN_IDS``. In prompt-logprob mode the sampler
++returns the top-k ``(token_ids, logprobs)`` per prompt position; the EOS-hazard and
++layer-sensitivity studies need the exact logprob of specific ids (e.g. the EOS ids)
++at every position, which the top-k rows do not guarantee to contain. The helper
++overwrites the last ``len(extra_ids)`` top-k columns with those ids and their exact
++logprobs gathered from the full distribution.
++"""
++
++from __future__ import annotations
++
++from collections.abc import Sequence
++
++import torch
++
++
++def inject_extra_prompt_logprobs(
++    token_ids: torch.Tensor,
++    logprobs: torch.Tensor,
++    raw_logprobs: torch.Tensor,
++    extra_ids: Sequence[int],
++    num_prompt_logprobs: int,
++) -> tuple[torch.Tensor, torch.Tensor]:
++    """Replace the last ``len(extra_ids)`` columns of ``token_ids``/``logprobs``.
++
++    The tensors are modified in place.
++
++    Args:
++        token_ids: ``[num_tokens, num_prompt_logprobs + 1]`` gathered top-k token ids
++            (column 0 is the target token).
++        logprobs: matching gathered logprobs.
++        raw_logprobs: ``[num_tokens, vocab]`` full log-softmax the top-k was
++            gathered from.
++        extra_ids: token ids whose exact logprobs are wanted.
++        num_prompt_logprobs: the request's ``prompt_logprobs`` (top-k columns).
++
++    Returns:
++        The same two tensors (modified in place). ``extra_ids`` empty is a no-op.
++
++    Raises:
++        ValueError: when ``num_prompt_logprobs < len(extra_ids)``; the columns would
++            otherwise overwrite the target-token column.
++    """
++    num_extra = len(extra_ids)
++    if num_extra == 0:
++        return token_ids, logprobs
++    if num_prompt_logprobs < num_extra:
++        raise ValueError(
++            "prompt_logprobs must be at least the number of "
++            f"VLLM_PROMPT_LOGPROB_EXTRA_TOKEN_IDS ({num_prompt_logprobs} < {num_extra})"
++        )
++    extra = torch.tensor(
++        list(extra_ids), device=token_ids.device, dtype=token_ids.dtype
++    )
++    extra_logprobs = raw_logprobs.index_select(dim=-1, index=extra.to(torch.long))
++    token_ids[:, -num_extra:] = extra
++    logprobs[:, -num_extra:] = extra_logprobs.to(logprobs.dtype)
++    return token_ids, logprobs
+diff --git a/vllm/v1/worker/gpu_model_runner.py b/vllm/v1/worker/gpu_model_runner.py
+index f82d222..cc61cf4 100644
+--- a/vllm/v1/worker/gpu_model_runner.py
++++ b/vllm/v1/worker/gpu_model_runner.py
+@@ -170,6 +170,7 @@ from vllm.v1.pool.metadata import PoolingMetadata, PoolingStates
+ from vllm.v1.sample.logits_processor import LogitsProcessors, build_logitsprocs
+ from vllm.v1.sample.logits_processor.interface import LogitsProcessor
+ from vllm.v1.sample.metadata import SamplingMetadata
++from vllm.v1.sample.prompt_logprob_extra import inject_extra_prompt_logprobs
+ from vllm.v1.sample.rejection_sampler import RejectionSampler
+ from vllm.v1.sample.sampler import Sampler
+ from vllm.v1.spec_decode.custom_class_proposer import create_custom_proposer
+@@ -5416,10 +5417,18 @@ class GPUModelRunner(
+             tgt_token_ids = prompt_token_ids[start_tok : start_tok + num_logits]
+ 
+             # Compute prompt logprobs.
+-            logprobs = self.sampler.compute_logprobs(logits)
++            raw_logprobs = self.sampler.compute_logprobs(logits)
+             token_ids, logprobs, ranks, _ = self.sampler.gather_logprobs(
+-                logprobs, num_prompt_logprobs, tgt_token_ids
+-            )
++                raw_logprobs, num_prompt_logprobs, tgt_token_ids
++            )
++            if envs.VLLM_PROMPT_LOGPROB_EXTRA_TOKEN_IDS:
++                token_ids, logprobs = inject_extra_prompt_logprobs(
++                    token_ids,
++                    logprobs,
++                    raw_logprobs,
++                    envs.VLLM_PROMPT_LOGPROB_EXTRA_TOKEN_IDS,
++                    num_prompt_logprobs,
++                )
+ 
+             # Transfer GPU->CPU async.
+             chunk_slice = slice(start_idx, start_idx + num_logits)

@@ -14,6 +14,7 @@
 
 import json
 import os
+from typing import Any, Optional
 
 import torch
 from ray._private.runtime_env.constants import RAY_JOB_CONFIG_JSON_ENV_VAR
@@ -57,10 +58,17 @@ PPO_RAY_RUNTIME_ENV = {
 }
 
 
-def get_ppo_ray_runtime_env():
+def get_ppo_ray_runtime_env(precision_scheduler: Optional[Any] = None):
     """
     A filter function to return the PPO Ray runtime environment.
     To avoid repeat of some environment variables that are already set.
+
+    Args:
+        precision_scheduler: optional ``actor_rollout_ref.rollout.precision_scheduler`` block
+            (dataclass, dict or DictConfig). It is translated into the vLLM env-var wire format
+            (see docs/precision_scheduler/config.md) so the settings reach every Ray actor.
+            ``VLLM_DUAL_PRECISION_*``, ``VERL_*`` and ``TMPDIR`` from the driver environment are
+            passed through for backward compatibility with launchers that export them directly.
     """
     working_dir = (
         json.loads(os.environ.get(RAY_JOB_CONFIG_JSON_ENV_VAR, "{}")).get("runtime_env", {}).get("working_dir", None)
@@ -76,4 +84,19 @@ def get_ppo_ray_runtime_env():
     # Always forward these at call-time, not import-time.
     for key in ("PYTHONHASHSEED", "VERL_FULL_DETERMINISM", "VLLM_BATCH_INVARIANT"):
         runtime_env["env_vars"][key] = os.environ.get(key, "0")
+    runtime_env["env_vars"].update(_precision_scheduler_env(precision_scheduler))
     return runtime_env
+
+
+def _precision_scheduler_env(precision_scheduler: Optional[Any]) -> dict[str, str]:
+    from verl.workers.config.precision_scheduler import PrecisionSchedulerConfig, collect_forwarded_env, to_vllm_env
+
+    env_vars = collect_forwarded_env(os.environ)
+    if precision_scheduler is None:
+        return env_vars
+    from verl.utils.config import omega_conf_to_dataclass
+
+    if not isinstance(precision_scheduler, PrecisionSchedulerConfig):
+        precision_scheduler = omega_conf_to_dataclass(precision_scheduler, dataclass_type=PrecisionSchedulerConfig)
+    env_vars.update(to_vllm_env(precision_scheduler))
+    return env_vars

@@ -28,10 +28,7 @@ from verl.workers.rollout.vllm_rollout.utils import (
     DUAL_PRECISION_SHADOW_MODULE_NAME,
     _hide_dual_precision_shadow_model,
 )
-from verl.workers.rollout.vllm_rollout.vllm_async_server import (
-    _resolve_rollout_model_path,
-    resolve_sleep_level,
-)
+from verl.workers.rollout.vllm_rollout.vllm_async_server import _resolve_rollout_model_path
 
 # --------------------------------------------------------------------------- #
 # (a) hide helper                                                               #
@@ -116,56 +113,14 @@ def test_resolve_rollout_model_path_defaults_to_actor_local_path(monkeypatch):
     assert calls == [("hf://int4", True)]
 
 
-def test_rollout_config_accepts_model_path_and_sleep_level(monkeypatch):
-    monkeypatch.delenv("VERL_FORCE_VLLM_SLEEP_LEVEL", raising=False)
-    monkeypatch.delenv("VLLM_DUAL_PRECISION_ROLLOUT", raising=False)
-    cfg = RolloutConfig(name="vllm", model_path="/ckpt/int4", sleep_level=1)
-    assert cfg.model_path == "/ckpt/int4" and cfg.sleep_level == 1
+def test_rollout_config_accepts_model_path():
+    assert RolloutConfig(name="vllm", model_path="/ckpt/int4").model_path == "/ckpt/int4"
     assert RolloutConfig(name="vllm").model_path is None
-    assert RolloutConfig(name="vllm").sleep_level is None
 
 
 # --------------------------------------------------------------------------- #
-# (c) sleep level                                                               #
+# (c) sleep level (resolved by C8's precision_scheduler.resolve_sleep_level)     #
 # --------------------------------------------------------------------------- #
-
-
-@pytest.mark.parametrize("level", [0, 3, -1])
-def test_rollout_config_rejects_invalid_sleep_level(level, monkeypatch):
-    monkeypatch.delenv("VERL_FORCE_VLLM_SLEEP_LEVEL", raising=False)
-    with pytest.raises(ValueError, match="sleep_level"):
-        RolloutConfig(name="vllm", sleep_level=level)
-
-
-def test_rollout_config_env_fallback_for_sleep_level(monkeypatch):
-    monkeypatch.delenv("VLLM_DUAL_PRECISION_ROLLOUT", raising=False)
-    monkeypatch.setenv("VERL_FORCE_VLLM_SLEEP_LEVEL", "2")
-    assert RolloutConfig(name="vllm").sleep_level == 2
-    # Explicit YAML wins over the env fallback.
-    assert RolloutConfig(name="vllm", sleep_level=1).sleep_level == 1
-    monkeypatch.setenv("VERL_FORCE_VLLM_SLEEP_LEVEL", "3")
-    with pytest.raises(ValueError, match="sleep_level"):
-        RolloutConfig(name="vllm")
-
-
-def test_dual_precision_requires_sleep_level_one(monkeypatch):
-    monkeypatch.delenv("VERL_FORCE_VLLM_SLEEP_LEVEL", raising=False)
-    monkeypatch.setenv("VLLM_DUAL_PRECISION_ROLLOUT", "1")
-    assert RolloutConfig(name="vllm").sleep_level == 1
-    assert RolloutConfig(name="vllm", sleep_level=1).sleep_level == 1
-    with pytest.raises(ValueError, match="INT4 shadow store"):
-        RolloutConfig(name="vllm", sleep_level=2)
-    monkeypatch.setenv("VERL_FORCE_VLLM_SLEEP_LEVEL", "2")
-    with pytest.raises(ValueError, match="INT4 shadow store"):
-        RolloutConfig(name="vllm")
-
-
-def test_resolve_sleep_level_prefers_config_over_default():
-    assert resolve_sleep_level(SimpleNamespace(sleep_level=None), 2) == 2
-    assert resolve_sleep_level(SimpleNamespace(sleep_level=1), 2) == 1
-    assert resolve_sleep_level(SimpleNamespace(), 1) == 1
-    with pytest.raises(ValueError):
-        resolve_sleep_level(SimpleNamespace(sleep_level=5), 1)
 
 
 class _RecordingEngine:
@@ -181,7 +136,11 @@ class _RecordingEngine:
 
 def _server(sleep_level, lora_rank, mode):
     server = object.__new__(vllm_async_server.vLLMHttpServer)
-    server.config = SimpleNamespace(mtp=None, sleep_level=sleep_level, free_cache_engine=True)
+    server.config = SimpleNamespace(
+        mtp=None,
+        precision_scheduler=SimpleNamespace(enable=False, sleep_level=sleep_level),
+        free_cache_engine=True,
+    )
     server.model_config = SimpleNamespace(lora_rank=lora_rank, lora={})
     server.engine = _RecordingEngine()
     server.node_rank = 0
@@ -205,6 +164,15 @@ def test_colocated_sleep_honors_config(monkeypatch, sleep_level, expected):
     server = _server(sleep_level, 0, vllm_async_server.RolloutMode.COLOCATED)
     asyncio.run(server.sleep())
     assert server.engine.levels == [expected]
+
+
+def test_dual_precision_forces_sleep_level_one_at_both_sites(monkeypatch):
+    monkeypatch.setattr(vllm_async_server, "is_torch_npu_available", lambda check_device=False: False)
+    for mode in (vllm_async_server.RolloutMode.HYBRID, vllm_async_server.RolloutMode.COLOCATED):
+        server = _server(None, 0, mode)
+        server.config.precision_scheduler.enable = True
+        asyncio.run(server.sleep())
+        assert server.engine.levels == [1]
 
 
 # --------------------------------------------------------------------------- #

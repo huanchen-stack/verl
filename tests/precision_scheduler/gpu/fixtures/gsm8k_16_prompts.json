@@ -1,0 +1,165 @@
+{
+ "source": "/data/huanchen/verl/.codex-report/rl-workflow/data/gsm8k_messages_0_31/train.parquet rows 0-15 (openai/gsm8k train subset used by the rl-workflow launchers)",
+ "prompts": [
+  {
+   "index": 0,
+   "data_source": "openai/gsm8k",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Mustafa buys a fridge, a TV and a computer with a total budget of $1600. The TV costs $600 and the fridge costs $500 more than the computer. How much does the computer cost?"
+    }
+   ]
+  },
+  {
+   "index": 1,
+   "data_source": "openai/gsm8k",
+   "messages": [
+    {
+     "role": "user",
+     "content": "A department store offers a 10% discount for the amount exceeding $100 of the customer's total charge. Jaco bought a pair of shoes for $74; 2 pairs of socks that cost $2 per pair; a bag that costs $42. How much will Jaco pay for those items?"
+    }
+   ]
+  },
+  {
+   "index": 2,
+   "data_source": "openai/gsm8k",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Steve decides to read a new book.  He reads 100 pages Monday, Wed, and Friday.  The book is 2100 pages long.  How many weeks does it take to read them all?"
+    }
+   ]
+  },
+  {
+   "index": 3,
+   "data_source": "openai/gsm8k",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Adam has 50 balls. 20 balls are red, 10 are blue, and the rest are either pink or orange. If there are 3 times as many pink as orange balls, how many orange balls are there?"
+    }
+   ]
+  },
+  {
+   "index": 4,
+   "data_source": "openai/gsm8k",
+   "messages": [
+    {
+     "role": "user",
+     "content": "James has 28 marbles.  He puts them into 4 bags.  He puts the same number in each bag.  He then gives one bag away.  How many marbles does James have left?"
+    }
+   ]
+  },
+  {
+   "index": 5,
+   "data_source": "openai/gsm8k",
+   "messages": [
+    {
+     "role": "user",
+     "content": "A school has 15 classrooms. One-third of these classrooms have 30 desks in each classroom and the rest have 25 desks in each classroom. Only one student can sit at one desk. How many students can this school accommodate so that everyone has their own desk?"
+    }
+   ]
+  },
+  {
+   "index": 6,
+   "data_source": "openai/gsm8k",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Jerry paid off some of his debts. Two months ago, he paid $12 while last month, he paid $3 more. If his debt was $50 in all, how much does he still have to pay?"
+    }
+   ]
+  },
+  {
+   "index": 7,
+   "data_source": "openai/gsm8k",
+   "messages": [
+    {
+     "role": "user",
+     "content": "A rival football team has won twice as many matches as the home team they will be playing did. If records show that the home team has won three matches, and each team drew four matches and lost none, how many matches have both teams played in total?"
+    }
+   ]
+  },
+  {
+   "index": 8,
+   "data_source": "openai/gsm8k",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Jamal bought 4 half dozen colored crayons at $2 per crayon. What was the total cost of the crayons that she bought?"
+    }
+   ]
+  },
+  {
+   "index": 9,
+   "data_source": "openai/gsm8k",
+   "messages": [
+    {
+     "role": "user",
+     "content": "For every 1 year a human ages, a dog ages 7 years.  When Max is 3, how much older, in dog years, will his 3-year-old dog be?"
+    }
+   ]
+  },
+  {
+   "index": 10,
+   "data_source": "openai/gsm8k",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Tina has 12 pink pens. She has 9 fewer green pens than pink pens. Tina has 3 more blue pens than green pens. How many pens does Tina have in total?"
+    }
+   ]
+  },
+  {
+   "index": 11,
+   "data_source": "openai/gsm8k",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Vikki worked 42 hours in one week. Her hourly pay rate is $10. From her weekly earnings, 20% is deducted as tax, 5% is deducted as insurance cover, and $5 is deducted for union dues. How much money, in dollars, does Vikki take home after deductions?"
+    }
+   ]
+  },
+  {
+   "index": 12,
+   "data_source": "openai/gsm8k",
+   "messages": [
+    {
+     "role": "user",
+     "content": "On a school trip to the seashore, Alan and his friends collected shells. Alan collected four times as many shells as Ben did. Ben got a late start and only collected a third of what Laurie did. If Laurie collected 36 shells how many did Alan collect?"
+    }
+   ]
+  },
+  {
+   "index": 13,
+   "data_source": "openai/gsm8k",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Jenn is saving up money to buy a bike. She has 5 jars full of quarters. Each jar can hold 160 quarters. If the bike costs 180 dollars, how much money will she have left over after buying it?"
+    }
+   ]
+  },
+  {
+   "index": 14,
+   "data_source": "openai/gsm8k",
+   "messages": [
+    {
+     "role": "user",
+     "content": "Gavin has had 4 dreams every day for a year now. If he had twice as many dreams last year as he had this year, calculate the total number of dreams he's had in the two years."
+    }
+   ]
+  },
+  {
+   "index": 15,
+   "data_source": "openai/gsm8k",
+   "messages": [
+    {
+     "role": "user",
+     "content": "A liter of chlorine costs $10 and is now sold at 20% off. A box of soap that costs $16 is now sold at 25% off. How much will you save if you buy 3 liters of chlorine and 5 boxes of soap?"
+    }
+   ]
+  }
+ ]
+}

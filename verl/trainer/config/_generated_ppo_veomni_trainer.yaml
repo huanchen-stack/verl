@@ -88,6 +88,7 @@ actor_rollout_ref:
     loss_scale_factor: null
     entropy_coeff: 0
     calculate_entropy: false
+    old_log_prob_calculate_entropy: true
     calculate_sum_pi_squared: false
     use_kl_loss: false
     use_prefix_grouper: false
@@ -265,7 +266,6 @@ actor_rollout_ref:
     max_model_len: null
     max_num_seqs: 1024
     model_path: null
-    sleep_level: null
     enable_chunked_prefill: true
     enable_prefix_caching: true
     logprobs_mode: processed_logprobs
@@ -377,6 +377,26 @@ actor_rollout_ref:
       transfer_backend: nixl
       bootstrap_port: null
       ib_device: null
+    precision_scheduler:
+      _target_: verl.workers.config.PrecisionSchedulerConfig
+      enable: false
+      lora_fast_path: false
+      lora_dual_stream: false
+      lora_fuse_packed: true
+      int4_model: null
+      policy: ''
+      bf16_layers: first:3,last:3
+      int4_modules: all
+      reprefill: false
+      sleep_level: null
+      reload_policy_each_rollout: false
+      online_observations: null
+      validate_shadow: false
+      validate_lifecycle: false
+      request_trace_dir: null
+      request_trace_log_tokens: false
+      zmq_namespace: null
+      force_shm_weight_transfer: false
   model:
     _target_: verl.workers.config.HFModelConfig
     path: ~/models/deepseek-llm-7b-chat
@@ -402,6 +422,7 @@ actor_rollout_ref:
     tiled_mlp:
       enabled: false
       num_shards: 4
+    gemma4_dense_ffpa: false
     mtp:
       _target_: verl.workers.config.MtpConfig
       enable: false
@@ -615,6 +636,7 @@ critic:
     tiled_mlp:
       enabled: false
       num_shards: 4
+    gemma4_dense_ffpa: false
     mtp:
       _target_: verl.workers.config.MtpConfig
       enable: false
@@ -868,6 +890,12 @@ trainer:
   max_critic_ckpt_to_keep: null
   ray_wait_register_center_timeout: 300
   device: cuda
+  rollout_only: false
+  rollout_only_steps: null
+  save_initial_checkpoint: false
+  exit_after_initial_checkpoint: false
+  ray_master_port_range: null
+  stable_sample_uid: false
   use_v1: true
   v1:
     trainer_mode: sync

@@ -23,6 +23,7 @@ import torch
 from transformers.modeling_flash_attention_utils import _flash_attention_forward
 from transformers.modeling_utils import PreTrainedModel
 
+from verl.models.transformers import gemma4_ffpa
 from verl.utils.import_utils import is_trl_available
 from verl.utils.transformers_compat import is_transformers_version_in_range
 from verl.utils.ulysses import (
@@ -140,6 +141,14 @@ def _ulysses_flash_attention_forward(
         position_ids_list = [torch.empty_like(position_ids) for _ in range(ulysses_sp_size)]
         torch.distributed.all_gather(position_ids_list, position_ids, group=get_ulysses_sequence_parallel_group())
         position_ids = torch.concat(position_ids_list, dim=-1)
+
+    # Gemma-4 global-attention layers use head_dim 512, which FA2 cannot execute.
+    # Opt-in (actor_rollout_ref.model.gemma4_dense_ffpa) and shape-gated so every
+    # other model and every other layer remain unchanged.
+    if gemma4_ffpa.should_dispatch(query_states):
+        return gemma4_ffpa.dense_ffpa_forward(
+            query_states, key_states, value_states, attention_mask, position_ids, **kwargs
+        )
 
     # (bsz, seq_len, n_head/n, head_dim)
     query_length = query_states.size(1)
@@ -297,6 +306,7 @@ def apply_monkey_patch(
     use_prefix_grouper: bool = False,
     use_tiled_mlp: bool = False,
     tiled_mlp_shards: int = 4,
+    gemma4_dense_ffpa: bool = False,
 ):
     """
     Apply monkey patch to the models for ulysses sequence parallel, fused kernel, tiled MLP and prefix grouper.
@@ -312,7 +322,10 @@ def apply_monkey_patch(
         fused_kernels_backend: The backend to use for fused kernels.
         use_tiled_mlp: Whether to use TiledMLP for memory-efficient MLP computation.
         tiled_mlp_shards: Number of shards for TiledMLP (higher = lower memory, slightly slower).
+        gemma4_dense_ffpa: Route head_dim-512 (Gemma-4 global) attention through dense FFPA
+            (see verl.models.transformers.gemma4_ffpa); requires use_remove_padding=False.
     """
+    gemma4_ffpa.set_dense_ffpa_enabled(gemma4_dense_ffpa)
 
     # Apply TiledMLP monkey patch for memory-efficient MLP computation
     if use_tiled_mlp:
@@ -528,7 +541,7 @@ def apply_monkey_patch(
             patch_vlm_for_ulysses_input_slicing(Qwen3_5TextModel)
             patch_vlm_for_ulysses_input_slicing(Qwen3_5MoeTextModel)
 
-    if use_remove_padding or ulysses_sp_size > 1:
+    if use_remove_padding or ulysses_sp_size > 1 or gemma4_dense_ffpa:
         if hasattr(module, "_flash_attention_forward"):  # transformers <= 4.47.1 or legacy models
             module._flash_attention_forward = _ulysses_flash_attention_forward
             print(f"Monkey patch _flash_attention_forward in {model.__module__}")

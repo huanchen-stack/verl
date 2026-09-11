@@ -912,9 +912,14 @@ class AgentLoopWorker:
             mm_token_type_ids = torch.zeros_like(input_ids)
             image_token_id = get_processor_token_id(self.processor, "image")
             video_token_id = get_processor_token_id(self.processor, "video")
-            if image_token_id is not None:
+            # Generated text can hallucinate a multimodal special token even
+            # though the request has no corresponding image/video grid.  Do
+            # not label such a token as multimodal: Qwen3.5's get_rope_index
+            # would otherwise try to consume a grid from a None iterator and
+            # drop the completed rollout during reward postprocessing.
+            if image_token_id is not None and multi_modal_kwargs["image_grid_thw"] is not None:
                 mm_token_type_ids[0][input_ids[0] == image_token_id] = 1
-            if video_token_id is not None:
+            if video_token_id is not None and multi_modal_kwargs["video_grid_thw"] is not None:
                 mm_token_type_ids[0][input_ids[0] == video_token_id] = 2
             multi_modal_kwargs["mm_token_type_ids"] = mm_token_type_ids
 

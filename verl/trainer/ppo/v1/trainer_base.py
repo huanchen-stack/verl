@@ -78,6 +78,7 @@ from verl.utils.debug.metrics import calculate_debug_metrics
 from verl.utils.fs import copy_to_local
 from verl.utils.import_utils import load_extern_type
 from verl.utils.metric import reduce_metrics
+from verl.utils.net_utils import parse_port_range
 from verl.utils.py_functional import rename_dict
 from verl.utils.seqlen_balancing import calculate_workload, get_seqlen_balanced_partitions, log_seqlen_unbalance
 from verl.utils.tracking import Tracking, ValidationGenerationsLogger
@@ -199,6 +200,9 @@ class PPOTrainer(ABC):
                     OmegaConf.select(self.config.global_profiler.global_tool_config.nsys, "worker_nsight_options")
                 )
         wg_kwargs["device_name"] = self.config.trainer.device
+        master_port_range = self._resolve_master_port_range()
+        if master_port_range is not None:
+            wg_kwargs["master_port_range"] = master_port_range
         logger.info(f"worker group kwargs: {wg_kwargs}")
 
         for resource_pool, class_dict in self.resource_pool_to_cls.items():
@@ -317,6 +321,9 @@ class PPOTrainer(ABC):
             experiment_name=self.config.trainer.experiment_name,
         )
 
+        if self._maybe_save_initial_checkpoint():
+            return
+
         # perform validation before training
         if self.config.trainer.get("val_before_train", True):
             self.on_validate_begin()
@@ -343,6 +350,10 @@ class PPOTrainer(ABC):
         self.next_step_profile = False
 
         self.on_train_begin()
+        if self.config.trainer.get("rollout_only", False):
+            self._fit_rollout_only(progress_bar)
+            return
+
         last_val_metrics = None
         while current_epoch < self.config.trainer.total_epochs and self.global_steps <= self.total_training_steps:
             is_last_step = self.global_steps >= self.total_training_steps
@@ -403,6 +414,92 @@ class PPOTrainer(ABC):
         # Ensure dump executor is shut down when training loop ends without reaching is_last_step
         self._shutdown_dump_executor()
 
+    # ------------------------------ precision-scheduler harness ------------------------------
+
+    def _resolve_master_port_range(self) -> Optional[list[int]]:
+        """``trainer.ray_master_port_range`` ("start:end") with ``VERL_RAY_MASTER_PORT_RANGE`` env fallback."""
+        spec = self.config.trainer.get("ray_master_port_range", None) or os.getenv("VERL_RAY_MASTER_PORT_RANGE")
+        if not spec:
+            return None
+        return parse_port_range(str(spec))
+
+    def _maybe_save_initial_checkpoint(self) -> bool:
+        """Save the step-0 checkpoint once so paired policy runs resume from identical weights.
+
+        Returns True when the caller should return immediately (``exit_after_initial_checkpoint``).
+        """
+        if not self.config.trainer.get("save_initial_checkpoint", False):
+            return False
+        if self.global_steps != 0:
+            raise RuntimeError("save_initial_checkpoint requires a fresh run with global_steps == 0")
+        self._save_checkpoint()
+        # Frozen stdout marker: launchers wait for it before starting the paired runs.
+        print("VERL_INITIAL_CHECKPOINT_COMPLETE step=0", flush=True)
+        if self.config.trainer.get("exit_after_initial_checkpoint", False):
+            self._shutdown_dump_executor()
+            return True
+        return False
+
+    def _rollout_only_total_steps(self) -> int:
+        steps = self.config.trainer.get("rollout_only_steps", None)
+        if steps is None:
+            return int(self.total_training_steps)
+        steps = int(steps)
+        if steps < 1:
+            raise ValueError(f"trainer.rollout_only_steps must be >= 1, got {steps}")
+        return min(steps, int(self.total_training_steps))
+
+    def _fit_rollout_only(self, progress_bar) -> None:
+        """Rollout-only measurement loop: generation + reward per step, no logprob / advantage / update.
+
+        Every step dumps the generations to ``trainer.rollout_data_dir`` and logs
+        ``timing_s/gen``, ``rollout_only/requests``, ``rollout_only/response_tokens`` and
+        ``critic/rewards/mean`` (names parsed by the archived summaries). ``on_step_end()`` runs
+        between steps so the rollout engine is re-armed exactly like in RL (weight sync + wake up);
+        it is skipped after the last step. The ``VERL_ROLLOUT_ONLY_COMPLETE`` marker is frozen.
+        """
+        rollout_data_dir = self.config.trainer.get("rollout_data_dir", None)
+        if not rollout_data_dir:
+            raise RuntimeError("trainer.rollout_only requires trainer.rollout_data_dir")
+        first_step = self.global_steps
+        total_steps = self._rollout_only_total_steps()
+        last_step = first_step + total_steps - 1
+        while self.global_steps <= last_step:
+            is_last_step = self.global_steps >= last_step
+            metrics: dict[str, Any] = {}
+            self.timing_raw = {}
+            with marked_timer("step", self.timing_raw):
+                self.on_step_begin()
+                self._start_profiling()
+                batch = self.step(metrics, self.timing_raw)
+                self._stop_profiling()
+                print(
+                    "VERL_ROLLOUT_ONLY_COMPLETE "
+                    f"step={self.global_steps} requests={len(batch)} gen_seconds={self.timing_raw.get('gen')}",
+                    flush=True,
+                )
+                if not is_last_step:
+                    self.on_step_end()
+
+            rollout_data = tq.kv_batch_get(
+                keys=batch.keys, partition_id=batch.partition_id, select_fields=["responses", "rm_scores"]
+            )
+            response_tokens = int(rollout_data["responses"].offsets().diff().sum().item())
+            reward = float(rollout_data["rm_scores"].sum(dim=1).mean().item())
+            rollout_metrics = {
+                "timing_s/gen": float(self.timing_raw.get("gen", 0.0)),
+                "rollout_only/requests": len(batch),
+                "rollout_only/response_tokens": response_tokens,
+                "critic/rewards/mean": reward,
+            }
+            self._log_rollout_data(batch, self.timing_raw, rollout_data_dir)
+            tq.kv_clear(keys=batch.keys, partition_id=batch.partition_id)
+            self.logger.log(data=rollout_metrics, step=self.global_steps)
+            progress_bar.update(1)
+            self.global_steps += 1
+        self._shutdown_dump_executor()
+        progress_bar.close()
+
     def step(self, metrics: dict, timing_raw: dict) -> KVBatchMeta:
         # 1. add batch to generate
         self._add_batch_to_generate()
@@ -423,6 +520,9 @@ class PPOTrainer(ABC):
         if self.reward_loop_manager.reward_loop_worker_handles is None:
             with marked_timer("reward", timing_raw, color="yellow"):
                 batch = self._compute_reward_colocate(batch, metrics=metrics)
+
+        if self.config.trainer.get("rollout_only", False):
+            return batch
 
         # 4. balance batch across data parallel groups
         batch = self._balance_batch(batch, metrics=metrics)
@@ -1103,7 +1203,7 @@ class PPOTrainer(ABC):
             self.train_dataloader_it = iter(self.train_dataloader)
             batch_dict = next(self.train_dataloader_it)
 
-        batch_dict["uid"] = np.array([str(uuid.uuid4()) for _ in range(len(batch_dict["raw_prompt"]))], dtype=object)
+        batch_dict["uid"] = self._make_sample_uids(batch_dict)
         batch = tu.get_tensordict(batch_dict)
         tu.assign_non_tensor_data(batch, "global_steps", self.global_steps)
 
@@ -1113,6 +1213,19 @@ class PPOTrainer(ABC):
 
         # add batch to agent loop manager
         self.agent_loop_manager.generate_sequences(batch)
+
+    def _make_sample_uids(self, batch_dict: dict) -> np.ndarray:
+        """TransferQueue uids for one prompt batch: uuid4 by default, ``idx-<index>`` with stable_sample_uid."""
+        num_prompts = len(batch_dict["raw_prompt"])
+        if not self.config.trainer.get("stable_sample_uid", False):
+            return np.array([str(uuid.uuid4()) for _ in range(num_prompts)], dtype=object)
+        extra_infos = batch_dict.get("extra_info", [{}] * num_prompts)
+        uids = []
+        for i in range(num_prompts):
+            extra_info = extra_infos[i] if i < len(extra_infos) else {}
+            index = extra_info.get("index", i) if isinstance(extra_info, dict) else i
+            uids.append(f"idx-{index}")
+        return np.array(uids, dtype=object)
 
     def _compute_reward_colocate(self, batch: KVBatchMeta, metrics: dict | None = None) -> KVBatchMeta:
         """Compute the reward score with a colocated reward model."""
@@ -1236,9 +1349,10 @@ class PPOTrainer(ABC):
             return batch
 
         # 1. compute log probs
+        calculate_entropy = bool(self.config.actor_rollout_ref.actor.get("old_log_prob_calculate_entropy", True))
         batch.extra_info.update(
             {
-                "calculate_entropy": True,
+                "calculate_entropy": calculate_entropy,
                 "compute_loss": False,
                 "temperature": self.config.actor_rollout_ref.rollout.temperature,
             }
@@ -1246,33 +1360,37 @@ class PPOTrainer(ABC):
         output: KVBatchMeta = self.actor_rollout_wg.compute_log_prob(batch)
         assert len(output) == len(batch)
 
-        fields = ["entropy", "log_probs", "response_mask"]
+        fields = ["log_probs", "response_mask"]
+        if calculate_entropy:
+            fields.insert(0, "entropy")
         if self.config.actor_rollout_ref.rollout.calculate_log_probs:
             fields.extend(["responses", "rollout_log_probs"])
         data = tq.kv_batch_get(keys=batch.keys, partition_id=batch.partition_id, select_fields=fields)
 
         # 2. write old_log_probs and entropy back to TransferQueue
         data["old_log_probs"] = response_from_nested(data.pop("log_probs"), data["response_mask"])
-        data["entropy"] = response_from_nested(data.pop("entropy"), data["response_mask"])
-        batch = tq.kv_batch_put(
-            keys=batch.keys, partition_id=batch.partition_id, fields=data.select("old_log_probs", "entropy")
-        )
+        fields_to_put = ["old_log_probs"]
+        if calculate_entropy:
+            data["entropy"] = response_from_nested(data.pop("entropy"), data["response_mask"])
+            fields_to_put.append("entropy")
+        batch = tq.kv_batch_put(keys=batch.keys, partition_id=batch.partition_id, fields=data.select(*fields_to_put))
 
         data = DataProto(batch=data.to_padded_tensor())
 
         # 3. calculate actor entroy metrics
-        actor_config = self.config.actor_rollout_ref.actor
-        entropy_agg = agg_loss(
-            loss_mat=data.batch["entropy"],
-            loss_mask=data.batch["response_mask"],
-            loss_agg_mode=actor_config.loss_agg_mode,
-            loss_scale_factor=actor_config.loss_scale_factor,
-        )
-        old_log_prob_metrics = {
-            "actor/entropy": entropy_agg.detach().item(),
-            # "perf/mfu/actor_infer": old_log_prob_mfu,
-        }
-        metrics.update(old_log_prob_metrics)
+        if calculate_entropy:
+            actor_config = self.config.actor_rollout_ref.actor
+            entropy_agg = agg_loss(
+                loss_mat=data.batch["entropy"],
+                loss_mask=data.batch["response_mask"],
+                loss_agg_mode=actor_config.loss_agg_mode,
+                loss_scale_factor=actor_config.loss_scale_factor,
+            )
+            old_log_prob_metrics = {
+                "actor/entropy": entropy_agg.detach().item(),
+                # "perf/mfu/actor_infer": old_log_prob_mfu,
+            }
+            metrics.update(old_log_prob_metrics)
 
         # 4. calculate rollout vs actor logprobs diff
         if self.config.actor_rollout_ref.rollout.calculate_log_probs:

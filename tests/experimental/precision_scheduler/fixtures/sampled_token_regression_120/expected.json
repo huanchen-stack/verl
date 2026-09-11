@@ -1,0 +1,15 @@
+{
+  "n": 120,
+  "predictor": "sampled_response_tokens",
+  "source_model": "newest local 120-run shared linear regression",
+  "inference": {
+    "slope_seconds_per_sampled_token": 0.0003699166224487428,
+    "intercept_seconds": 14.602247877138044,
+    "r2": 0.9758704477725693
+  },
+  "training": {
+    "slope_seconds_per_sampled_token": 0.0005209837333221172,
+    "intercept_seconds": 28.509479417901982,
+    "r2": 0.9684750071971298
+  }
+}
