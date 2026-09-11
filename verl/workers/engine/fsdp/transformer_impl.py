@@ -82,6 +82,45 @@ logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 device_name = get_device_name()
 
 
+def entropy_from_padded_logits(
+    logits: torch.Tensor,
+    entropy_fn,
+    with_chunking: bool,
+    chunk_size: int,
+    checkpointing: bool = False,
+) -> torch.Tensor:
+    """Entropy of ``[batch, seq, vocab]`` logits on the padded (non-rmpad) path.
+
+    The chunked helper operates on a 2-D ``[tokens, vocab]`` tensor and bounds
+    the softmax temporary by ``chunk_size`` rows.  Chunking the leading batch
+    dimension of a 3-D tensor would not bound it for long sequences, so flatten
+    the tokens, compute bounded chunks, then restore the padded layout.
+    Without chunking ``entropy_fn`` is applied to the 3-D tensor directly.
+    """
+
+    def _compute(x: torch.Tensor) -> torch.Tensor:
+        if with_chunking:
+            return entropy_fn(x.reshape(-1, x.shape[-1]), chunk_size=chunk_size).reshape(x.shape[:-1])
+        return entropy_fn(x)
+
+    if checkpointing:
+        return torch.utils.checkpoint.checkpoint(_compute, logits, use_reentrant=False)
+    return _compute(logits)
+
+
+def cat_unbound_jagged(tensors) -> torch.Tensor:
+    """Concatenate the samples of an unbound jagged tensor along dim 0.
+
+    With a per-GPU micro-batch of one sample, ``torch.cat`` of the sole view
+    would materialize a second ``[tokens, vocab]`` copy; for long sequences and
+    large vocabularies that copy alone can be several GiB.  Return the view.
+    """
+    tensors = list(tensors)
+    if len(tensors) == 1:
+        return tensors[0]
+    return torch.cat(tensors)
+
+
 class FSDPEngine(BaseEngine):
     """
     Concrete Engine implementation using PyTorch FullyShardedDataParallel (FSDP).
@@ -249,11 +288,18 @@ class FSDPEngine(BaseEngine):
             if self.model_config.model_type == "language_model":
                 auto_class = get_hf_auto_model_class(hf_config=self.model_config.hf_config)
 
+                # Per-model checkpoint key remapping (e.g. gemma4_unified stores the
+                # text decoder under model.language_model.*); None for other models.
+                checkpoint_key_mapping = getattr(self.model_config.hf_config, "_verl_checkpoint_key_mapping", None)
+                from_pretrained_kwargs = {}
+                if checkpoint_key_mapping is not None:
+                    from_pretrained_kwargs["key_mapping"] = checkpoint_key_mapping
                 module = auto_class.from_pretrained(
                     pretrained_model_name_or_path=self.model_config.local_path,
                     torch_dtype=torch_dtype,
                     config=self.model_config.hf_config,
                     trust_remote_code=self.model_config.trust_remote_code,
+                    **from_pretrained_kwargs,
                 )
 
                 # Strip sub-modules listed in _verl_strip_modules (e.g.
@@ -1239,10 +1285,13 @@ class FSDPEngineWithLMHead(FSDPEngine):
                 logits.div_(temperature.clamp(min=1e-8).to(logits.dtype))
 
                 if calculate_entropy:
-                    if not self.engine_config.entropy_checkpointing:
-                        entropy = verl_F.entropy_from_logits(logits)
-                    else:
-                        entropy = torch.utils.checkpoint.checkpoint(verl_F.entropy_from_logits, logits)
+                    entropy = entropy_from_padded_logits(
+                        logits,
+                        entropy_fn=self.compute_entropy_from_logits,
+                        with_chunking=self.engine_config.entropy_from_logits_with_chunking,
+                        chunk_size=self.engine_config.entropy_from_logits_chunk_size,
+                        checkpointing=self.engine_config.entropy_checkpointing,
+                    )
 
                 if calculate_sum_pi_squared:
                     sum_pi_squared = verl_F.calculate_sum_pi_squared_from_logits(logits)
@@ -1252,7 +1301,7 @@ class FSDPEngineWithLMHead(FSDPEngine):
                     seq_lengths = cu_seqlens.diff()
                     starts = torch.zeros_like(seq_lengths, dtype=torch.int64)
                     logits = torch.nested.narrow(logits, 1, starts, seq_lengths, layout=torch.jagged)
-                    logits_rmpad = torch.cat([t for t in logits.unbind()])
+                    logits_rmpad = cat_unbound_jagged(logits.unbind())
                     input_ids_rmpad_rolled = output_args["input_ids_rmpad_rolled"]
                     log_probs = logprobs_from_logits(logits=logits_rmpad, labels=input_ids_rmpad_rolled)
 
