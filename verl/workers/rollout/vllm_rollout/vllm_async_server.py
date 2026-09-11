@@ -37,6 +37,7 @@ from vllm.v1.engine.async_llm import AsyncLLM
 from verl.plugin.platform import get_platform
 from verl.utils.config import omega_conf_to_dataclass
 from verl.utils.device import get_resource_name, get_visible_devices_keyword, is_torch_npu_available
+from verl.utils.fs import copy_to_local
 from verl.utils.net_utils import get_free_port, is_valid_ipv6_address
 from verl.utils.profiler import DistProfiler, build_vllm_profiler_args
 from verl.utils.tokenizer import normalize_token_ids
@@ -83,6 +84,14 @@ else:
 
 logger = logging.getLogger(__file__)
 logger.setLevel(logging.INFO)
+
+
+def _resolve_rollout_model_path(config: RolloutConfig, model_config: HFModelConfig) -> str:
+    """Base model served by vLLM: ``rollout.model_path`` if set, else the actor's local path."""
+    model_path = getattr(config, "model_path", None)
+    if model_path is None:
+        return model_config.local_path
+    return copy_to_local(model_path, use_shm=model_config.use_shm)
 
 
 class vLLMHttpServer:
@@ -377,7 +386,8 @@ class vLLMHttpServer:
         if self.config.enable_rollout_routing_replay:
             args.update({"enable_return_routed_experts": True})
 
-        server_args = ["serve", self.model_config.local_path] + build_cli_args_from_config(args)
+        rollout_model_path = _resolve_rollout_model_path(self.config, self.model_config)
+        server_args = ["serve", rollout_model_path] + build_cli_args_from_config(args)
 
         if self.replica_rank == 0:
             pprint(server_args)

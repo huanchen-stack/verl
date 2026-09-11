@@ -83,6 +83,10 @@ max_model_len: null
 # max length of sequences
 max_num_seqs: 1024
 
+# Optional override for the base model vLLM serves; null reuses actor_rollout_ref.model.path.
+# Lets a BF16 actor/ref train while rollout serves a different base checkpoint.
+model_path: null
+
 # may get higher throughput when set to True. When activated, Please increase max_num_batched_tokens or decrease max_model_len.
 enable_chunked_prefill: True
 
