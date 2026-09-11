@@ -375,6 +375,24 @@ actor_rollout_ref:
       transfer_backend: nixl
       bootstrap_port: null
       ib_device: null
+    precision_scheduler:
+      _target_: verl.workers.config.PrecisionSchedulerConfig
+      enable: false
+      lora_fast_path: false
+      lora_dual_stream: false
+      lora_fuse_packed: true
+      int4_model: null
+      policy: ''
+      bf16_layers: first:3,last:3
+      int4_modules: all
+      reprefill: false
+      sleep_level: null
+      reload_policy_each_rollout: false
+      online_observations: null
+      validate_shadow: false
+      validate_lifecycle: false
+      request_trace_dir: null
+      request_trace_log_tokens: false
   model:
     _target_: verl.workers.config.HFModelConfig
     path: ~/models/deepseek-llm-7b-chat
