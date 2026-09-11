@@ -4,8 +4,9 @@
 #
 # Usage:  RUN_DIR=<dir> [MODEL=<hf snapshot>] [DATA_DIR=<dir with train/test.parquet>] \
 #         [REWARD_SCRIPT=<py>] bash run_rollout_only_smoke.sh
-# Run it under the decision-13 launcher (run_gpu.sh) so CUDA_VISIBLE_DEVICES and RAY_TMPDIR are set
-# and every process is killed afterwards. Validate the result with validate_rollout_only_run.py.
+# Run it under the decision-13 launcher (scripts/precision_scheduler/env/run_gpu.sh) so
+# CUDA_VISIBLE_DEVICES and RAY_TMPDIR are set and every process is killed afterwards.
+# Validate the result with validate_rollout_only_run.py.
 set -euo pipefail
 
 run="${RUN_DIR:?set RUN_DIR}"

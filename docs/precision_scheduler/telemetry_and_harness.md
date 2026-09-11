@@ -161,5 +161,21 @@ the env variables that remain).
 
 ## Smoke result
 
-Filled in by the implementer after `tests/special_e2e/precision_scheduler/run_rollout_only_smoke.sh`
-completes; validated with `validate_rollout_only_run.py --expected-requests 32`.
+NOT PASSING as of 2026-09-11 (slot B): three launches of
+`tests/special_e2e/precision_scheduler/run_rollout_only_smoke.sh` on GPU 4 (Qwen3.5-4B, GSM8K,
+8 x 4 requests, `precision_scheduler.enable=false`) got through config validation, dataset load
+and Ray init, then lost their GCS / raylet within about a minute
+(`Raylet is terminated. Termination is unexpected`, `ActorUnavailableError`). Cause: the shared
+launcher `scripts/precision_scheduler/env/run_gpu.sh` ends every run with `ray stop --force`,
+which scans all processes host-wide by name (`raylet`, `gcs_server`, `ray::`, ...) and kills them
+regardless of temp dir, so any concurrent component finishing a GPU test kills every other Ray
+cluster of the same user. Bare `ray.init(_temp_dir=...)` on this host succeeds in 5 s. Fix for the
+launcher (C0): drop `ray stop --force` (the process-group kill already covers the Ray processes
+that `ray.init()` spawned under the private `RAY_TMPDIR`) or restrict it to processes whose
+command line mentions that `RAY_TMPDIR`. Re-run when no other launcher is active:
+
+```
+RUN_DIR=/tmp/ps_smoke scripts/precision_scheduler/env/run_gpu.sh --gpus 4 --timeout 1800 -- \
+  bash tests/special_e2e/precision_scheduler/run_rollout_only_smoke.sh
+python tests/special_e2e/precision_scheduler/validate_rollout_only_run.py /tmp/ps_smoke --expected-requests 32
+```
