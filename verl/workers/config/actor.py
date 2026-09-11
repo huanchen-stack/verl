@@ -167,6 +167,8 @@ class ActorConfig(BaseConfig):
     tau_pos: float = 1.0
     tau_neg: float = 1.05
     calculate_entropy: bool = False
+    # Compute entropy in the old-logprob pass (default keeps upstream behavior; false skips it for timing studies).
+    old_log_prob_calculate_entropy: bool = True
     calculate_sum_pi_squared: bool = False
     use_kl_loss: bool = False
     # Whether to enable PrefixGrouper-based shared-prefix forward

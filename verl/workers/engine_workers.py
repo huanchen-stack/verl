@@ -14,6 +14,7 @@
 import functools
 import logging
 import os
+import time
 from contextlib import nullcontext
 from copy import deepcopy
 from functools import partial
@@ -691,7 +692,13 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                   :meth:`checkpoint_engine.send_weights` for asynchronous weight
                   transfer via checkpoint engine, suitable for disaggregated
                   trainer/rollout deployments.
+
+        Returns:
+            dict[str, float]: sub-timings of the naive LoRA-merge path (``update_weights_materialize``:
+            merged-weight materialisation, ``update_weights_load_merged``: rollout load), surfaced by
+            ``CheckpointEngineManager.last_update_timing``. Empty otherwise.
         """
+        timing_info: dict[str, float] = {}
 
         # Resolve mode: "auto" falls back to config, explicit values take precedence
         effective_mode = mode if mode != "auto" else self.config.rollout.checkpoint_engine.backend
@@ -700,7 +707,7 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         if effective_mode != "naive":
             per_tensor_param, _ = self.actor.engine.get_per_tensor_param()
             await self.checkpoint_engine.send_weights(per_tensor_param, global_steps=global_steps)
-            return
+            return timing_info
 
         set_expandable_segments(False)
         log_gpu_memory_usage("Before resume weights", logger=logger)
@@ -711,9 +718,12 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         log_gpu_memory_usage("After resume weights", logger=logger)
 
         # 2. determine if we need a base weight sync (adapter path only)
+        materialize_started_at = time.perf_counter()
         per_tensor_param, peft_config = self.actor.engine.get_per_tensor_param(
             layered_summon=self.layered_summon, base_sync_done=True
         )
+        if self.peft_merge:
+            timing_info["update_weights_materialize"] = time.perf_counter() - materialize_started_at
 
         do_lora_base_sync = False
         if not self.peft_merge and peft_config is not None:
@@ -721,17 +731,24 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
             do_lora_base_sync = not self.base_sync_done
 
         # 3. sync weights: For SGLang, we need base first (when needed), then adapter/merged
+        sync_elapsed = 0.0
         if do_lora_base_sync:
             per_tensor_param_base, peft_config = self.actor.engine.get_per_tensor_param(
                 layered_summon=self.layered_summon, base_sync_done=False
             )
+            sync_started_at = time.perf_counter()
             await self.rollout.update_weights(
                 per_tensor_param_base, peft_config=peft_config, base_sync_done=False, global_steps=global_steps
             )
+            sync_elapsed += time.perf_counter() - sync_started_at
 
+        sync_started_at = time.perf_counter()
         await self.rollout.update_weights(
             per_tensor_param, peft_config=peft_config, base_sync_done=True, global_steps=global_steps
         )
+        sync_elapsed += time.perf_counter() - sync_started_at
+        if self.peft_merge:
+            timing_info["update_weights_load_merged"] = sync_elapsed
 
         log_gpu_memory_usage("After update_weights", logger=logger)
 
@@ -747,6 +764,7 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
 
         self.base_sync_done = True
         set_expandable_segments(True)
+        return timing_info
 
     @register(dispatch_mode=Dispatch.DP_COMPUTE, blocking=False)
     def execute_checkpoint_engine(self, method: str, *args, **kwargs):

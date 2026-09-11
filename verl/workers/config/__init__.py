@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from . import actor, checkpoint, critic, disaggregation, engine, model, optimizer, reward, rollout
+from . import actor, checkpoint, critic, disaggregation, engine, model, optimizer, precision_scheduler, reward, rollout
 from .actor import *  # noqa: F401
 from .checkpoint import *  # noqa: F401
 from .critic import *  # noqa: F401
@@ -21,6 +21,7 @@ from .distillation import *  # noqa: F401
 from .engine import *  # noqa: F401
 from .model import *  # noqa: F401
 from .optimizer import *  # noqa: F401
+from .precision_scheduler import *  # noqa: F401
 from .reward import *  # noqa: F401
 from .rollout import *  # noqa: F401
 
@@ -35,4 +36,5 @@ __all__ = (
     + distillation.__all__
     + disaggregation.__all__
     + checkpoint.__all__
+    + precision_scheduler.__all__
 )

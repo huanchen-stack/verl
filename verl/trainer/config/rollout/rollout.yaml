@@ -480,3 +480,67 @@ disaggregation:
 
   # InfiniBand device (required for mooncake over RDMA).
   ib_device: null
+
+# Rollout precision scheduler: dual-precision (BF16/INT4) rollout, LoRA fast path and request tracing.
+# verl translates this block into vLLM environment variables for the server actor
+# (docs/precision_scheduler/config.md lists the key -> env mapping). All defaults are off.
+precision_scheduler:
+
+  # Required when using verl.utils.omega_conf_to_dataclass to instantiate dataclass configs
+  _target_: verl.workers.config.PrecisionSchedulerConfig
+
+  # Master switch for dual-precision rollout (VLLM_DUAL_PRECISION_ROLLOUT).
+  enable: false
+
+  # Fused rollout LoRA fast path (ROLLOUT_QLORA). Independent of `enable`.
+  lora_fast_path: false
+
+  # Run LoRA GEMMs on an auxiliary CUDA stream (VLLM_LORA_ENABLE_DUAL_STREAM).
+  lora_dual_stream: false
+
+  # Fuse packed qkv/gate_up LoRA GEMMs (VLLM_ROLLOUT_LORA_FUSE_PACKED).
+  lora_fuse_packed: true
+
+  # Path to the INT4 shadow checkpoint (VLLM_DUAL_PRECISION_INT4_MODEL).
+  int4_model: null
+
+  # Switching policy: "fixed_threshold:<t>", "fixed_frontier:<K>", "uniform_w4", or a path to an EMA policy JSON
+  # (VLLM_DUAL_PRECISION_POLICY). Empty string means unset.
+  policy: ""
+
+  # Layers kept in BF16 while the rest run INT4 (VLLM_DUAL_PRECISION_BF16_LAYERS).
+  bf16_layers: "first:3,last:3"
+
+  # Module classes eligible for INT4 (VLLM_DUAL_PRECISION_INT4_MODULES).
+  int4_modules: "all"
+
+  # Re-prefill surviving requests after a precision switch (VLLM_DUAL_PRECISION_REPREFILL).
+  reprefill: false
+
+  # Forced vLLM sleep level (1 or 2). null = automatic; forced to 1 whenever `enable` is true.
+  sleep_level: null
+
+  # Re-read the policy file at every rollout (VLLM_DUAL_PRECISION_RELOAD_POLICY_EACH_ROLLOUT).
+  reload_policy_each_rollout: false
+
+  # JSONL path receiving online switch cohorts (VLLM_DUAL_PRECISION_ONLINE_OBSERVATIONS).
+  online_observations: null
+
+  # Validate the INT4 shadow binding at load time (VLLM_DUAL_PRECISION_VALIDATE_SHADOW).
+  validate_shadow: false
+
+  # Validate request lifecycle bookkeeping in the scheduler (VLLM_DUAL_PRECISION_VALIDATE_LIFECYCLE).
+  validate_lifecycle: false
+
+  # Directory for the per-request lifetime trace written by the vLLM server actor (VERL_REQUEST_TRACE_DIR).
+  request_trace_dir: null
+
+  # Record sampled token ids in the finish rows of the trace (VERL_REQUEST_TRACE_LOG_TOKENS).
+  request_trace_log_tokens: false
+
+  # Host-wide namespace of the colocated weight-transfer ZMQ socket (VERL_ZMQ_NAMESPACE); lets several
+  # independent Ray clusters (which reuse job ids) share one host. null uses the Ray job id.
+  zmq_namespace: null
+
+  # Force the shared-memory weight-transfer path even where CUDA IPC works (VERL_FORCE_SHM_WEIGHT_TRANSFER).
+  force_shm_weight_transfer: false

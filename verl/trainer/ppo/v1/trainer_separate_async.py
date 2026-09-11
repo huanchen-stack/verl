@@ -124,6 +124,7 @@ class PPOTrainerSeparateAsync(PPOTrainer):
             with marked_timer("update_weights", self.timing_raw, color="red"):
                 # wake up all replicas to update weights
                 self.standalone_checkpoint_manager.update_weights(self.global_steps)
+            self.timing_raw.update(getattr(self.standalone_checkpoint_manager, "last_update_timing", None) or {})
 
     def switch_to_rollout(self):
         # TODO: disable auto offload in config and offload according to the switch strategy

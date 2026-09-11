@@ -21,6 +21,7 @@ from verl.base_config import BaseConfig
 from verl.utils.profiler import ProfilerConfig
 from verl.workers.config.disaggregation import DisaggregationConfig
 from verl.workers.config.model import MtpConfig
+from verl.workers.config.precision_scheduler import PrecisionSchedulerConfig
 
 __all__ = [
     "SamplingConfig",
@@ -271,6 +272,10 @@ class RolloutConfig(BaseConfig):
 
     disaggregation: DisaggregationConfig = field(default_factory=DisaggregationConfig)
 
+    # Rollout precision scheduler (dual-precision BF16/INT4 rollout, LoRA fast path, request tracing).
+    # Translated into vLLM env vars for the server actor; see docs/precision_scheduler/config.md.
+    precision_scheduler: PrecisionSchedulerConfig = field(default_factory=PrecisionSchedulerConfig)
+
     def __post_init__(self):
         """Validate the rollout config"""
         # Deprecation warning for mode field - only async mode is supported
@@ -334,6 +339,22 @@ class RolloutConfig(BaseConfig):
                 self,
                 "disaggregation",
                 DisaggregationConfig(**OmegaConf.to_container(self.disaggregation, resolve=True)),
+            )
+
+        if isinstance(self.precision_scheduler, dict):
+            object.__setattr__(self, "precision_scheduler", PrecisionSchedulerConfig(**self.precision_scheduler))
+        elif not isinstance(self.precision_scheduler, PrecisionSchedulerConfig):
+            from omegaconf import DictConfig, OmegaConf
+
+            if not isinstance(self.precision_scheduler, DictConfig):
+                raise TypeError(
+                    f"rollout.precision_scheduler must be dict, DictConfig, or PrecisionSchedulerConfig; "
+                    f"got {type(self.precision_scheduler).__name__}."
+                )
+            object.__setattr__(
+                self,
+                "precision_scheduler",
+                PrecisionSchedulerConfig(**OmegaConf.to_container(self.precision_scheduler, resolve=True)),
             )
 
         if self.disaggregation.enabled and self.name != "sglang":

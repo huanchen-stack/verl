@@ -30,6 +30,25 @@ from verl.workers.rollout import BaseRollout, RolloutReplica, get_rollout_class
 from verl.workers.rollout.utils import ensure_async_iterator
 
 
+def reduce_timing_dicts(result: Any) -> dict[str, float]:
+    """Max-merge per key the timing dicts returned by ``update_weights`` on every actor rank.
+
+    Non-dict entries (workers that return None) are ignored, so the helper is safe on the
+    mixed ``actor_wg + rollout`` result list of the checkpoint-engine path.
+    """
+    if isinstance(result, dict):
+        return {str(k): float(v) for k, v in result.items()}
+    if isinstance(result, list | tuple):
+        merged: dict[str, float] = {}
+        for item in result:
+            if not isinstance(item, dict):
+                continue
+            for key, value in item.items():
+                merged[str(key)] = max(merged.get(str(key), 0.0), float(value))
+        return merged
+    return {}
+
+
 @dataclass
 class TensorMeta:
     name: str
@@ -383,6 +402,14 @@ class CheckpointEngineManager:
         self.backend_cls = CheckpointEngineRegistry.get(config.backend)
         self.actor_wg = actor_wg
         self.replicas = replicas
+        self._last_update_timing: dict[str, float] = {}
+
+    @property
+    def last_update_timing(self) -> dict[str, float]:
+        """Sub-timings of the most recent ``update_weights`` call (e.g. ``update_weights_materialize``,
+        ``update_weights_load_merged`` on the LoRA-merge path), max-reduced across actor ranks.
+        Empty when the workers report nothing. Trainers merge it into ``timing_raw``."""
+        return dict(self._last_update_timing)
 
     def build_process_group(self, rollout: RayWorkerGroup):
         """Build process group for actor worker group and rollout replicas."""
@@ -476,7 +503,8 @@ class CheckpointEngineManager:
 
         # 0. update weights for sync training with colocated actor and rollout
         if self.backend == "naive":
-            ray.get(self.actor_wg.update_weights(global_steps=global_steps, mode=self.backend))
+            result = ray.get(self.actor_wg.update_weights(global_steps=global_steps, mode=self.backend))
+            self._last_update_timing = reduce_timing_dicts(result)
             return
 
         # 1. abort and save all unfinished requests for partial rollout
@@ -496,10 +524,11 @@ class CheckpointEngineManager:
         self.build_process_group(rollout)
 
         # 5. update weights of all workers
-        ray.get(
+        result = ray.get(
             actor_wg.update_weights(global_steps=global_steps, mode=self.backend)
             + rollout.update_weights(global_steps=global_steps)
         )
+        self._last_update_timing = reduce_timing_dicts(result)
 
         # 6. finalize all workers
         ray.get(

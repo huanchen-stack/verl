@@ -44,6 +44,8 @@ from verl.utils.vllm.vllm_fp8_utils import apply_vllm_fp8_patches
 from verl.workers.config import HFModelConfig, RolloutConfig
 from verl.workers.rollout.replica import RolloutMode, RolloutReplica, TokenOutput
 from verl.workers.rollout.utils import get_max_position_embeddings, qwen2_5_vl_dedup_image_tokens, run_uvicorn
+from verl.workers.rollout.vllm_rollout.precision_scheduler_env import resolve_sleep_level, to_vllm_env
+from verl.workers.rollout.vllm_rollout.request_trace import RequestLifetimeTracer
 from verl.workers.rollout.vllm_rollout.utils import (
     VLLM_LORA_INT_ID,
     VLLM_LORA_NAME,
@@ -146,6 +148,10 @@ class vLLMHttpServer:
         # model weights version, set by ServerAdapter when update weights.
         self.global_steps = None
         self._warned_missing_spec_decode_stats = False
+        # Opt-in per-request lifetime trace (rollout.precision_scheduler.request_trace_dir).
+        self.request_tracer = RequestLifetimeTracer.from_config(
+            getattr(self.config, "precision_scheduler", None), replica_rank, node_rank
+        )
 
         if self.rollout_mode != RolloutMode.HYBRID and self.config.load_format == "dummy":
             logger.warning(f"rollout mode is {self.rollout_mode}, load_format is dummy, set to auto")
@@ -477,9 +483,16 @@ class vLLMHttpServer:
         audio_data: Optional[list[Any]] = None,
         mm_processor_kwargs: Optional[dict[str, Any]] = None,
         priority: int = 0,
+        trace_request_id: Optional[str] = None,
     ) -> TokenOutput:
-        """Generate sequence with token-in-token-out."""
+        """Generate sequence with token-in-token-out.
+
+        ``trace_request_id`` is an optional stable id recorded in the lifetime trace; the engine
+        request id stays ``request_id``.
+        """
         prompt_ids = normalize_token_ids(prompt_ids)
+        if self.request_tracer is not None:
+            self.request_tracer.record_start(request_id, len(prompt_ids), trace_request_id=trace_request_id)
 
         # Calculate the maximum possible new tokens based on available context space
         # This serves as a safety upper bound. vLLM v0.20+ rejects `max_tokens < 1`
@@ -567,6 +580,8 @@ class vLLMHttpServer:
         # outputs may be empty. Return empty results with stop_reason="aborted"
         # instead of crashing with "IndexError: list index out of range".
         if not final_res.outputs:
+            if self.request_tracer is not None:
+                self.request_tracer.record_finish(request_id, 0, "aborted", trace_request_id=trace_request_id)
             return TokenOutput(
                 token_ids=[],
                 log_probs=None,
@@ -581,6 +596,14 @@ class vLLMHttpServer:
             result_dict=extra_fields,
         )
         token_ids = final_res.outputs[0].token_ids
+        if self.request_tracer is not None:
+            self.request_tracer.record_finish(
+                request_id,
+                len(token_ids),
+                final_res.outputs[0].finish_reason,
+                token_ids=token_ids,
+                trace_request_id=trace_request_id,
+            )
         log_probs = None
         if sampling_params.logprobs is not None:
             log_probs = [logprobs[token_ids[i]].logprob for i, logprobs in enumerate(final_res.outputs[0].logprobs)]
@@ -654,7 +677,7 @@ class vLLMHttpServer:
         if self.rollout_mode == RolloutMode.HYBRID:
             await self._sleep_hybrid()
         elif self.rollout_mode == RolloutMode.COLOCATED:
-            await self.engine.sleep(level=1)
+            await self.engine.sleep(level=resolve_sleep_level(getattr(self.config, "precision_scheduler", None), 1))
         elif self.rollout_mode == RolloutMode.STANDALONE:
             logger.info("skip sleep in standalone mode")
 
@@ -982,6 +1005,7 @@ class vLLMHttpServer:
             sleep_level = 1
         else:
             sleep_level = 2
+        sleep_level = resolve_sleep_level(getattr(self.config, "precision_scheduler", None), sleep_level)
         await self.engine.sleep(level=sleep_level)
         if _VLLM_VERSION >= version.parse("0.17.0"):
             await self.engine.reset_encoder_cache()
@@ -1044,6 +1068,8 @@ class vLLMReplica(RolloutReplica):
             env_vars = {
                 **{var: "1" for var in get_platform().ray_noset_envvars()},
                 **get_platform().rollout_env_vars(),
+                # rollout.precision_scheduler -> vLLM env-var wire format (docs/precision_scheduler/config.md)
+                **to_vllm_env(self.config.precision_scheduler),
             }
 
             server = self.server_class.options(

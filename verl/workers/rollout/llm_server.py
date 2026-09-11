@@ -228,9 +228,12 @@ class LLMServerClient:
                 multimodal_kwargs["mm_processor_kwargs"] = mm_processor_kwargs
             # priority is only supported by vLLM rollout server.
             priority = kwargs.pop("priority", 0)
-            priority_kwargs = (
-                {"priority": priority} if priority != 0 and self.config.actor_rollout_ref.rollout.name == "vllm" else {}
-            )
+            is_vllm = self.config.actor_rollout_ref.rollout.name == "vllm"
+            priority_kwargs = {"priority": priority} if priority != 0 and is_vllm else {}
+            # Stable agent-loop id, recorded as trace metadata by the vLLM server (other backends lack the kwarg).
+            trace_request_id = kwargs.pop("trace_request_id", None)
+            if is_vllm and trace_request_id is not None:
+                priority_kwargs["trace_request_id"] = trace_request_id
             output: TokenOutput = await server.generate.remote(
                 request_id=uuid4().hex,  # use new request_id for each turn
                 prompt_ids=prompt_ids,

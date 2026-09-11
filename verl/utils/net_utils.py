@@ -89,3 +89,22 @@ def get_free_port(address: str, with_alive_sock: bool = False) -> tuple[int, soc
         return port, sock
     sock.close()
     return port, None
+
+
+def parse_port_range(spec: str) -> list[int]:
+    """Parse a ``"start:end"`` port range into ``[start, end]``.
+
+    Used for ``trainer.ray_master_port_range`` (and its env fallback ``VERL_RAY_MASTER_PORT_RANGE``)
+    so that several Ray clusters on one host pick torch.distributed master ports from disjoint
+    ranges. Validation mirrors the archived driver: ``0 < start < end <= 65536``.
+    """
+    if not isinstance(spec, str) or ":" not in spec:
+        raise ValueError(f"port range must be 'start:end', got {spec!r}")
+    start_text, end_text = spec.split(":", maxsplit=1)
+    try:
+        start, end = int(start_text), int(end_text)
+    except ValueError as exc:
+        raise ValueError(f"port range must be 'start:end' with integer bounds, got {spec!r}") from exc
+    if not (0 < start < end <= 65536):
+        raise ValueError(f"Invalid port range {spec!r}: need 0 < start < end <= 65536")
+    return [start, end]
