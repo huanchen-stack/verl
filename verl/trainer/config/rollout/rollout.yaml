@@ -83,6 +83,15 @@ max_model_len: null
 # max length of sequences
 max_num_seqs: 1024
 
+# Optional override for the base model vLLM serves; null reuses actor_rollout_ref.model.path.
+# Lets a BF16 actor/ref train while rollout serves a different base checkpoint.
+model_path: null
+
+# vLLM sleep level between rollouts: 1 offloads weights to CPU, 2 discards them (weight sync restores).
+# null keeps the engine default (1 for LoRA-as-adapter / MTP / NPU / colocated, else 2);
+# VERL_FORCE_VLLM_SLEEP_LEVEL is the env fallback. Dual precision rollout requires 1.
+sleep_level: null
+
 # may get higher throughput when set to True. When activated, Please increase max_num_batched_tokens or decrease max_model_len.
 enable_chunked_prefill: True
 
