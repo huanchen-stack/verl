@@ -51,4 +51,4 @@ vLLM repository.
 | C5 switching policy module (torch-free, vLLM) | vLLM `docs/design/` |
 | C6 profiling and policy-building toolkit | `docs/precision_scheduler/` (added by C6) |
 | C8 verl telemetry and experiment harness | [`telemetry_and_harness.md`](telemetry_and_harness.md); config-to-env wire format in [`config.md`](config.md); pending vLLM patch in `pending_vllm_patches/` |
-| C10 datasets, recipes, long-run evaluation | `docs/precision_scheduler/` (added by C10) |
+| C10 datasets, recipes, long-run evaluation | [`recipes_and_evaluation.md`](recipes_and_evaluation.md); entry points and the dropped-launcher table in [`examples/precision_scheduler/README.md`](../../examples/precision_scheduler/README.md) |
