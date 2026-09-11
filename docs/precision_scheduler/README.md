@@ -50,5 +50,5 @@ vLLM repository.
 | C0 environment, worktrees, honest version | `scripts/precision_scheduler/env/ENVIRONMENT.md` |
 | C5 switching policy module (torch-free, vLLM) | vLLM `docs/design/` |
 | C6 profiling and policy-building toolkit | `docs/precision_scheduler/` (added by C6) |
-| C8 verl telemetry and experiment harness | `docs/precision_scheduler/` (added by C8) |
+| C8 verl telemetry and experiment harness | [`telemetry_and_harness.md`](telemetry_and_harness.md); config-to-env wire format in [`config.md`](config.md); pending vLLM patch in `pending_vllm_patches/` |
 | C10 datasets, recipes, long-run evaluation | `docs/precision_scheduler/` (added by C10) |
