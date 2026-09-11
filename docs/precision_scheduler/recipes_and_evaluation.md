@@ -102,7 +102,8 @@ ids, `token_ids` / `trace_request_id` presence, dump rows per step, the `VERL_RO
 markers (rollout-only) or the timing keys (`--mode full_step`), FileLogger rows, OOM strings, the
 optional INT4 binding proof (`lora_base_layers=N` and `int4_shadow_active=N`, 152 for Qwen3.5-9B) and
 the `COMPLETE` marker. The archived `collect_best_t8_verl_rollout.py` asserted the same things for
-the best-t8 matrix.
+the best-t8 matrix. The binding proof matches the message text only, so it holds at verl's default
+`VLLM_LOGGING_LEVEL=WARN` now that vLLM logs the contract lines at WARNING (`telemetry_and_harness.md`).
 
 ### 100-step protocol (from the frozen hardmath `PROTOCOL.md`)
 

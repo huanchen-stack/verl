@@ -147,6 +147,15 @@ the env variables that remain).
   `finish_reason`, `token_ids`).
 * C10 recipes set the YAML keys instead of exporting env vars; C10's `tools/validate_rollout_run.py`
   supersedes the minimal validator under `tests/special_e2e/precision_scheduler/`.
+* Log level of the audit contract: `verl/trainer/constants_ppo.py` starts every vLLM server with
+  `VLLM_LOGGING_LEVEL=WARN`, so vLLM emits its dual-precision contract lines (the `Dual precision QLoRA base
+  path bound: precision=..., lora_base_layers=N, ..., int4_shadow_active=N` bind line, the
+  `Lookup dynamic full-cost switch: ...` switch line, the policy reload / arm lines) at WARNING. INFO is not
+  required for the audit: `validate_rollout_run.py --expected-lora-layers` and the switch-log extractors key on
+  the message text, never on the level prefix, and
+  `tests/special_e2e/precision_scheduler/test_rollout_only_smoke.py` pins the proof against WARNING-formatted
+  lines. Exporting `VLLM_LOGGING_LEVEL=INFO` by hand (as the 2026-09-11 integration run did) is no longer
+  needed.
 
 ## Dropped and why
 

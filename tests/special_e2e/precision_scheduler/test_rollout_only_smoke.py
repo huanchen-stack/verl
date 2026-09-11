@@ -32,10 +32,22 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from validate_rollout_only_run import validate_rollout_only_run  # noqa: E402
+from validate_rollout_only_run import validate_rollout_only_run, validate_rollout_run  # noqa: E402
+
+# The dual-precision contract lines as vLLM prints them at WARNING level (verl's constants_ppo sets
+# VLLM_LOGGING_LEVEL=WARN, so INFO lines never reach driver.log); the message text is level-independent.
+BIND_LINES = (
+    "(vLLMHttpServer pid=1) (Worker pid=2) WARNING 09-11 11:22:43 [binding.py:296] Dual precision QLoRA base path "
+    "bound: precision=bf16, lora_base_layers=152, rebound_layers=0, int4_shadow_active=0, analysis_bf16_layers=off.",
+    "(vLLMHttpServer pid=1) (Worker pid=2) WARNING 09-11 11:22:45 [binding.py:296] Dual precision QLoRA base path "
+    "bound: precision=int4, lora_base_layers=152, rebound_layers=152, int4_shadow_active=152, "
+    "analysis_bf16_layers=off.",
+    "(vLLMHttpServer pid=1) (EngineCore pid=3) WARNING 09-11 11:23:02 [precision_switch.py:560] Lookup dynamic "
+    "full-cost switch: rollout_index=1, committed_frontier=250, applied_response_tokens=4096, applied_live_requests=7",
+)
 
 
-def _write_synthetic_run(run_dir: Path, n: int, drop_finish: bool = False) -> None:
+def _write_synthetic_run(run_dir: Path, n: int, drop_finish: bool = False, bind_lines: tuple[str, ...] = ()) -> None:
     (run_dir / "traces").mkdir(parents=True)
     (run_dir / "rollouts").mkdir()
     (run_dir / "metrics").mkdir()
@@ -71,7 +83,8 @@ def _write_synthetic_run(run_dir: Path, n: int, drop_finish: bool = False) -> No
     with open(run_dir / "rollouts" / "1.jsonl", "w") as f:
         for i in range(n):
             f.write(json.dumps({"uid": f"idx-{i}", "score": 1.0}) + "\n")
-    (run_dir / "driver.log").write_text(f"...\nVERL_ROLLOUT_ONLY_COMPLETE step=1 requests={n} gen_seconds=12.5\n")
+    log = ["...", *bind_lines, f"VERL_ROLLOUT_ONLY_COMPLETE step=1 requests={n} gen_seconds=12.5"]
+    (run_dir / "driver.log").write_text("\n".join(log) + "\n")
     with open(run_dir / "metrics" / "rows.jsonl", "w") as f:
         f.write(
             json.dumps(
@@ -97,6 +110,18 @@ def test_validator_on_synthetic_run(tmp_path):
     _write_synthetic_run(tmp_path / "bad", 8, drop_finish=True)
     summary = validate_rollout_only_run(tmp_path / "bad", expected_requests=8)
     assert not summary["valid"] and any("cardinality" in e for e in summary["errors"])
+
+
+def test_int4_binding_proof_matches_warning_level_lines(tmp_path):
+    """The bind regexes key on the message text, so the proof holds at WARNING (verl's default vLLM level)."""
+    _write_synthetic_run(tmp_path / "w4", 8, bind_lines=BIND_LINES)
+    summary = validate_rollout_run(tmp_path / "w4", 8, expected_lora_layers=152)
+    assert summary["valid"], summary["errors"]
+    summary = validate_rollout_run(tmp_path / "w4", 8, expected_lora_layers=36)
+    assert not summary["valid"] and any("LoRA wrapper" in e for e in summary["errors"])
+    _write_synthetic_run(tmp_path / "bf16", 8, bind_lines=BIND_LINES[:1])
+    summary = validate_rollout_run(tmp_path / "bf16", 8, expected_lora_layers=152)
+    assert not summary["valid"] and any("binding proof" in e for e in summary["errors"])
 
 
 @pytest.mark.gpu_smoke
