@@ -12,6 +12,10 @@
 # Usage:  RUN_DIR=... MODEL_KEY=... INITIAL_BATCH=64 RESPONSE_CAP=24576 TOTAL_STEPS=30 \
 #           BF_TRACE=<bf16 baseline trace> W4_TRACE=<w4 baseline trace> HEATMAP=<heatmap.json> \
 #           [DOWNSTREAM_SLOPE=0] [EMA_ALPHA=0.2] [RUNNER=rollout_only|full_step] recipes/continuous_ema.sh [overrides...]
+# INITIAL_BATCH is the single batch knob: the watcher gets --batch INITIAL_BATCH and both runners get
+# TRAIN_BATCH_SIZE = INITIAL_BATCH / ROLLOUT_N (ROLLOUT_N default 4; INITIAL_BATCH must be divisible). A
+# TRAIN_BATCH_SIZE that disagrees is refused (the watcher would count steps in a different cohort size
+# than the trainer submits).
 # The watcher is the C6 CLI `python -m verl.experimental.precision_scheduler.cli watch-ema`; WATCHER_CMD
 # overrides the whole command (tests use a stub), RUNNER_CMD overrides the runner command.
 # DRY_RUN=1 prints the watcher command line and the runner's override list without launching anything.
@@ -22,6 +26,13 @@ source "${here}/../common.sh"
 : "${RUN_DIR:?set RUN_DIR}"
 steps="${TOTAL_STEPS:-30}"
 batch="${INITIAL_BATCH:-64}"
+rollout_n="${ROLLOUT_N:-4}"
+[[ "${batch}" =~ ^[0-9]+$ && "${rollout_n}" =~ ^[0-9]+$ && "${rollout_n}" -gt 0 ]] || ps_die "INITIAL_BATCH / ROLLOUT_N must be positive integers"
+(( batch % rollout_n == 0 )) || ps_die "INITIAL_BATCH=${batch} is not divisible by ROLLOUT_N=${rollout_n}"
+train_batch_size=$((batch / rollout_n))
+if [[ -n "${TRAIN_BATCH_SIZE:-}" && "${TRAIN_BATCH_SIZE}" != "${train_batch_size}" ]]; then
+  ps_die "TRAIN_BATCH_SIZE=${TRAIN_BATCH_SIZE} disagrees with INITIAL_BATCH=${batch} / ROLLOUT_N=${rollout_n} = ${train_batch_size}"
+fi
 cap="${RESPONSE_CAP:-24576}"
 runner="${RUNNER:-rollout_only}"
 policy_path="${POLICY_PATH:-${RUN_DIR}/policy.json}"
@@ -40,8 +51,8 @@ else
   if [[ -n "${WATCHER_EXTRA_ARGS:-}" ]]; then read -r -a extra <<<"${WATCHER_EXTRA_ARGS}"; watcher+=("${extra[@]}"); fi
 fi
 
-runner_env=(RUN_DIR="${RUN_DIR}" INITIAL_BATCH="${batch}" RESPONSE_CAP="${cap}" TOTAL_STEPS="${steps}"
-  POLICY="${policy_path}" PROJECT_NAME="${PROJECT_NAME:-continuous_ema}")
+runner_env=(RUN_DIR="${RUN_DIR}" INITIAL_BATCH="${batch}" TRAIN_BATCH_SIZE="${train_batch_size}" ROLLOUT_N="${rollout_n}"
+  RESPONSE_CAP="${cap}" TOTAL_STEPS="${steps}" POLICY="${policy_path}" PROJECT_NAME="${PROJECT_NAME:-continuous_ema}")
 # The trainer waits (up to POLICY_BARRIER_TIMEOUT_S) before each rollout until the watcher advanced
 # calibration.policy_revision; 0 would let a rollout run on a stale revision (config.md).
 runner_overrides=(

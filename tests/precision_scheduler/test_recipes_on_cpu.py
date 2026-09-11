@@ -283,6 +283,8 @@ import os, sys, time
 from pathlib import Path
 run = Path(os.environ["RUN_DIR"]); (run / "runner_started").write_text(os.environ.get("POLICY", ""))
 (run / "runner_args").write_text("\\n".join(sys.argv[1:]))
+keys = ("INITIAL_BATCH", "TRAIN_BATCH_SIZE", "ROLLOUT_N")
+(run / "runner_batch").write_text(" ".join(os.environ.get(k, "-") for k in keys))
 time.sleep(float(sys.argv[1]))
 (run / "runner_done").write_text("ok")
 """
@@ -330,6 +332,33 @@ def test_continuous_ema_completes_when_watcher_consumes_every_step(tmp_path):
     assert (run / "runner_started").read_text() == str(run / "policy.json")
     args = (run / "runner_args").read_text().splitlines()
     assert f"{PS}.reload_policy_each_rollout=true" in args and f"{PS}.policy_barrier_timeout_s=600" in args
+    # Integration defect 5: the full_step runner reads TRAIN_BATCH_SIZE, not INITIAL_BATCH; the recipe hands
+    # the runner the derived TRAIN_BATCH_SIZE so the watcher's --batch and the rollout batch agree.
+    assert (run / "runner_batch").read_text() == "64 16 4"
+
+
+def test_continuous_ema_derives_train_batch_size_from_initial_batch(tmp_path):
+    env = _ema_env(tmp_path, final=2, delay=0.3, runner_sleep=1.0, steps=2)
+    env.update(INITIAL_BATCH="48", ROLLOUT_N="8")
+    proc = subprocess.run(
+        ["bash", str(EXAMPLES / "recipes" / "continuous_ema.sh")], env=env, capture_output=True, text=True, timeout=60
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert (tmp_path / "run" / "runner_batch").read_text() == "48 6 8"
+
+
+@pytest.mark.parametrize(
+    "env_extra", [{"INITIAL_BATCH": "30", "ROLLOUT_N": "4"}, {"INITIAL_BATCH": "64", "TRAIN_BATCH_SIZE": "8"}]
+)
+def test_continuous_ema_refuses_an_inconsistent_batch(tmp_path, env_extra):
+    env = _ema_env(tmp_path, final=2, delay=0.3, runner_sleep=1.0, steps=2)
+    env.update(env_extra)
+    proc = subprocess.run(
+        ["bash", str(EXAMPLES / "recipes" / "continuous_ema.sh")], env=env, capture_output=True, text=True, timeout=60
+    )
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    assert "INITIAL_BATCH" in proc.stderr
+    assert not (tmp_path / "run" / "runner_started").exists()
 
 
 def test_continuous_ema_dry_run_uses_the_c6_watcher(tmp_path):
@@ -364,6 +393,20 @@ def test_continuous_ema_dry_run_uses_the_c6_watcher(tmp_path):
     assert cfg.data.train_batch_size == 8 and cfg.actor_rollout_ref.rollout.max_num_seqs == 32
     assert ps.policy_barrier_timeout_s == 600
     assert cfg.trainer.experiment_name == "qwen3_5_4b_ema_policy"
+    # RUNNER=full_step reads TRAIN_BATCH_SIZE (defect 5): the derived value keeps 32 = 8 x 4 for both.
+    proc = subprocess.run(
+        ["bash", str(EXAMPLES / "recipes" / "continuous_ema.sh")],
+        env=dict(env, RUNNER="full_step"),
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "--batch 32 --cap 16384" in proc.stdout
+    overrides = [line.split("\t", 1)[1] for line in proc.stdout.splitlines() if line.startswith("OVERRIDE\t")]
+    cfg = compose_overrides(overrides)
+    assert cfg.trainer.rollout_only is False
+    assert cfg.data.train_batch_size == 8 and cfg.actor_rollout_ref.rollout.max_num_seqs == 32
 
 
 def test_data_root_is_required(tmp_path):

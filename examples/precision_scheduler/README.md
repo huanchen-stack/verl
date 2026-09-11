@@ -99,7 +99,9 @@ python tools/validate_rollout_run.py $RUN_DIR --expected-requests 64 --steps 2 -
 # full RL, 30 steps
 POLICY=full_w4 TRAIN_BATCH_SIZE=16 TOTAL_STEPS=30 bash examples/precision_scheduler/recipes/full_step.sh
 # continuous EMA (C6 watcher sidecar; baseline traces + heatmap from the profiling toolkit); the runner
-# also gets precision_scheduler.policy_barrier_timeout_s=${POLICY_BARRIER_TIMEOUT_S:-600} (static policies keep 0)
+# also gets precision_scheduler.policy_barrier_timeout_s=${POLICY_BARRIER_TIMEOUT_S:-600} (static policies keep 0).
+# INITIAL_BATCH (64) is the single batch knob for both RUNNER kinds: the watcher gets --batch INITIAL_BATCH and
+# the runner TRAIN_BATCH_SIZE=INITIAL_BATCH/ROLLOUT_N (must divide; a disagreeing TRAIN_BATCH_SIZE is refused)
 POLICY_PATH=$RUN_DIR/policy.json BF_TRACE=... W4_TRACE=... HEATMAP=... TOTAL_STEPS=30 RUNNER=rollout_only \
   bash examples/precision_scheduler/recipes/continuous_ema.sh
 # any recipe: DRY_RUN=1 prints the override list; extra arguments are appended as Hydra overrides
