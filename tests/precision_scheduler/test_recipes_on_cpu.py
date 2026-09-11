@@ -58,7 +58,14 @@ MODELS = ("qwen3_5_4b", "qwen3_5_9b", "phi4_mini_reasoning", "gemma4_e2b")
 
 def dry_run(script: Path, tmp_path: Path, env_extra: dict[str, str], *args: str) -> tuple[list[str], str]:
     env = {k: v for k, v in os.environ.items() if k not in ("DRY_RUN",)}
-    env.update({"DRY_RUN": "1", "RUN_DIR": str(tmp_path / "run"), "PYTHON_BIN": "python"})
+    env.update(
+        {
+            "DRY_RUN": "1",
+            "RUN_DIR": str(tmp_path / "run"),
+            "PYTHON_BIN": "python",
+            "PS_DATA_ROOT": str(tmp_path / "data"),
+        }
+    )
     env.update(env_extra)
     proc = subprocess.run(["bash", str(script), *args], env=env, capture_output=True, text=True, timeout=60)
     assert proc.returncode == 0, proc.stderr + proc.stdout
@@ -162,7 +169,7 @@ def test_extra_positional_overrides_win(tmp_path):
 
 
 def test_unknown_policy_fails(tmp_path):
-    env = dict(os.environ, DRY_RUN="1", RUN_DIR=str(tmp_path), POLICY="tail_tx")
+    env = dict(os.environ, DRY_RUN="1", RUN_DIR=str(tmp_path), POLICY="tail_tx", PS_DATA_ROOT=str(tmp_path))
     proc = subprocess.run(["bash", str(RECIPES["rollout_only"])], env=env, capture_output=True, text=True)
     assert proc.returncode == 2 and "bad POLICY" in proc.stderr
 
@@ -259,6 +266,7 @@ def test_continuous_ema_fails_closed_when_watcher_dies_early(tmp_path):
     assert proc.returncode == 1, proc.stdout + proc.stderr
     assert "watcher exited at revision 1/3" in proc.stderr
     assert time.time() - t0 < 25, "runner was not killed"
+    assert not subprocess.run(["pgrep", "-f", str(tmp_path / "runner.py")], capture_output=True).stdout.strip()
     run = tmp_path / "run"
     assert (run / "runner_started").exists() and not (run / "runner_done").exists()
     assert (run / "FAILED").read_text().startswith("watcher_exited_early")
@@ -274,7 +282,8 @@ def test_continuous_ema_completes_when_watcher_consumes_every_step(tmp_path):
     run = tmp_path / "run"
     assert (run / "CONTINUOUS_EMA_COMPLETE").exists() and (run / "runner_done").exists()
     assert (run / "runner_started").read_text() == str(run / "policy.json")
-    assert f"{PS}.reload_policy_each_rollout=true" in (run / "runner_args").read_text().splitlines()
+    args = (run / "runner_args").read_text().splitlines()
+    assert f"{PS}.reload_policy_each_rollout=true" in args and f"{PS}.policy_barrier_timeout_s=600" in args
 
 
 def test_continuous_ema_dry_run_uses_the_c6_watcher(tmp_path):
@@ -290,6 +299,7 @@ def test_continuous_ema_dry_run_uses_the_c6_watcher(tmp_path):
         W4_TRACE="/x/w4.jsonl",
         HEATMAP="/x/heatmap.json",
         PYTHON_BIN="python",
+        PS_DATA_ROOT=str(tmp_path / "data"),
     )
     proc = subprocess.run(
         ["bash", str(EXAMPLES / "recipes" / "continuous_ema.sh")], env=env, capture_output=True, text=True, timeout=60
@@ -306,3 +316,24 @@ def test_continuous_ema_dry_run_uses_the_c6_watcher(tmp_path):
     assert ps.reload_policy_each_rollout is True and ps.policy == str(run / "policy.json")
     assert cfg.trainer.rollout_only is True and cfg.trainer.rollout_only_steps == 5
     assert cfg.data.train_batch_size == 8 and cfg.actor_rollout_ref.rollout.max_num_seqs == 32
+    assert ps.policy_barrier_timeout_s == 600
+
+
+def test_data_root_is_required(tmp_path):
+    env = {k: v for k, v in os.environ.items() if k not in ("PS_DATA_ROOT", "DATA_DIR")}
+    env.update(DRY_RUN="1", RUN_DIR=str(tmp_path), POLICY="bf16")
+    proc = subprocess.run(["bash", str(RECIPES["rollout_only"])], env=env, capture_output=True, text=True)
+    assert proc.returncode == 2 and "PS_DATA_ROOT" in proc.stderr
+
+
+def test_launch_refuses_without_launcher_gpu(tmp_path):
+    """Decision 13: a real launch needs CUDA_VISIBLE_DEVICES from run_gpu.sh and never GPU 1."""
+    base = {k: v for k, v in os.environ.items() if k not in ("CUDA_VISIBLE_DEVICES", "DRY_RUN")}
+    base.update(RUN_DIR=str(tmp_path / "r"), POLICY="bf16", PS_DATA_ROOT=str(tmp_path), PYTHON_BIN="python")
+    proc = subprocess.run(["bash", str(RECIPES["rollout_only"])], env=base, capture_output=True, text=True)
+    assert proc.returncode == 2 and "run_gpu.sh" in proc.stderr
+    proc = subprocess.run(
+        ["bash", str(RECIPES["rollout_only"])], env=dict(base, CUDA_VISIBLE_DEVICES="1"), capture_output=True, text=True
+    )
+    assert proc.returncode == 2 and "GPU 1" in proc.stderr
+    assert not (tmp_path / "r").exists(), "the run directory is not created before the preflight"

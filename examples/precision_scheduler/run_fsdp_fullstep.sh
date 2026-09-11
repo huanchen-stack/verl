@@ -48,7 +48,7 @@ ps_resolve_policy "${POLICY}"
 ps_common_overrides
 
 PS_RUN_CONFIG_JSON=$(cat <<JSON
-{"driver":"run_fsdp_fullstep.sh","backend":"fsdp2","model_key":"${MODEL_KEY}","model_path":"${MODEL_PATH:-}","int4_model_path":"${INT4_MODEL_PATH:-}","policy":"${POLICY}","policy_kind":"${PS_POLICY_KIND}","steps":${steps},"train_batch_size":${train_batch_size},"rollout_n":${rollout_n},"requests_per_step":${requests_per_step},"response_cap":${response_cap},"prompt_cap":${prompt_cap},"max_model_len":${max_model_len},"temperature":1.0,"top_p":1.0,"top_k":-1,"rollout_seed":${rollout_seed},"reprefill":false,"lora_rank":16,"gpu_memory_utilization":${gmem},"enforce_eager":${enforce_eager},"update_weights_bucket_megabytes":${weight_bucket_mb},"save_freq":${save_freq},"actor_lr":"${actor_lr}","use_kl_loss":"${use_kl_loss}","data_dir":"${DATA_DIR:-${PS_DATA_ROOT}/gsm8k_messages_2048}","experiment_name":"${PS_EXPERIMENT_NAME}"}
+{"driver":"run_fsdp_fullstep.sh","backend":"fsdp2","model_key":"${MODEL_KEY}","model_path":"${MODEL_PATH:-}","int4_model_path":"${INT4_MODEL_PATH:-}","policy":"${POLICY}","policy_kind":"${PS_POLICY_KIND}","steps":${steps},"train_batch_size":${train_batch_size},"rollout_n":${rollout_n},"requests_per_step":${requests_per_step},"response_cap":${response_cap},"prompt_cap":${prompt_cap},"max_model_len":${max_model_len},"temperature":1.0,"top_p":1.0,"top_k":-1,"rollout_seed":${rollout_seed},"reprefill":false,"lora_rank":16,"gpu_memory_utilization":${gmem},"enforce_eager":${enforce_eager},"update_weights_bucket_megabytes":${weight_bucket_mb},"save_freq":${save_freq},"actor_lr":"${actor_lr}","use_kl_loss":"${use_kl_loss}","data_dir":"${DATA_DIR:-${PS_DATA_ROOT:-}/gsm8k_messages_2048}","experiment_name":"${PS_EXPERIMENT_NAME}"}
 JSON
 )
 ps_init_run_dir

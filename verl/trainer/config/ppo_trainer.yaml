@@ -489,5 +489,13 @@ ray_kwargs:
     # Number of CPUs for Ray. Use a fixed number instead of null when using SLURM.
     num_cpus: null
 
+    # Start the Ray dashboard. null keeps Ray's own default (auto); the precision-scheduler
+    # recipes set false so several experiments can share a host without a port clash.
+    include_dashboard: null
+
+    # Root temp directory of this Ray instance (must be absolute). null keeps Ray's default;
+    # the precision-scheduler recipes pass the launcher's private directory (RAY_TMPDIR).
+    _temp_dir: null
+
   # Path to save Ray timeline JSON for performance profiling
   timeline_json_file: null

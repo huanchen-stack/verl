@@ -13,7 +13,8 @@
 #   MODEL_PATH         optional local snapshot overriding actor_rollout_ref.model.path (default: overlay HF id)
 #   INT4_MODEL_PATH    optional local snapshot overriding rollout.precision_scheduler.int4_model
 #   POLICY             bf16 | full_w4 | tail_t<N> | fixed_k<K> | <path to a policy JSON>   (default bf16)
-#   DATA_DIR           directory holding train.parquet and test.parquet (default $PS_DATA_ROOT/gsm8k_messages_2048)
+#   DATA_DIR           directory holding train.parquet and test.parquet (default $PS_DATA_ROOT/gsm8k_messages_2048;
+#                      PS_DATA_ROOT has no default: export it (README "Data") or set DATA_DIR)
 #   REWARD_FN          custom reward file (default examples/precision_scheduler/rewards.py)
 #   EXPERIMENT_NAME    trainer.experiment_name (default <model>_<policy>)
 #   PORT_BASE          torch-distributed master port range base (default 47000 + 300 * first visible GPU)
@@ -27,7 +28,6 @@
 
 PS_EXAMPLES_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PS_REPO_ROOT="$(cd "${PS_EXAMPLES_DIR}/../.." && pwd)"
-PS_DATA_ROOT="${PS_DATA_ROOT:-/data/huanchen/ps_data}"
 PS_PYTHON="${PYTHON_BIN:-python}"
 
 ps_die() { echo "$(basename "${BASH_SOURCE[1]:-recipe}"): $*" >&2; exit 2; }
@@ -86,6 +86,7 @@ ps_common_overrides() {
   local model_key="${MODEL_KEY:-qwen3_5_4b}"
   local overlay="${PS_EXAMPLES_DIR}/models/${model_key}.yaml"
   [[ -f "${overlay}" ]] || ps_die "no model overlay ${overlay}"
+  if [[ -z "${DATA_DIR:-}" && -z "${PS_DATA_ROOT:-}" ]]; then ps_die "set DATA_DIR or PS_DATA_ROOT (see README, Data)"; fi
   local data_dir="${DATA_DIR:-${PS_DATA_ROOT}/gsm8k_messages_2048}"
   local reward="${REWARD_FN:-${PS_EXAMPLES_DIR}/rewards.py}"
   local gpu; gpu="$(ps_first_gpu)"
@@ -114,12 +115,21 @@ ps_common_overrides() {
     "trainer.default_local_dir=${RUN_DIR}/checkpoints"
     "trainer.rollout_data_dir=${RUN_DIR}/rollouts"
     "ray_kwargs.ray_init.num_cpus=${RAY_NUM_CPUS:-12}"
-    "+ray_kwargs.ray_init.include_dashboard=False"
-    "+ray_kwargs.ray_init._temp_dir=${ray_tmp}"
+    "ray_kwargs.ray_init.include_dashboard=False"
+    "ray_kwargs.ray_init._temp_dir=${ray_tmp}"
   )
   if [[ -n "${MODEL_PATH:-}" ]]; then
     PS_COMMON_OVERRIDES+=("actor_rollout_ref.model.path=${MODEL_PATH}")
   fi
+}
+
+# Decision 13: GPU launches go through scripts/precision_scheduler/env/run_gpu.sh, which sets
+# CUDA_VISIBLE_DEVICES (never GPU 1), owns the process group and checks for leftovers.
+ps_require_launcher_gpu() {
+  if [[ -z "${CUDA_VISIBLE_DEVICES:-}" ]]; then
+    ps_die "CUDA_VISIBLE_DEVICES is not set: launch under scripts/precision_scheduler/env/run_gpu.sh"
+  fi
+  case ",${CUDA_VISIBLE_DEVICES}," in *,1,*) ps_die "GPU 1 is never allowed (decision 13)";; esac
 }
 
 # ps_init_run_dir -> creates the layout, refuses to append to a started run, writes run_config.json
@@ -127,6 +137,7 @@ ps_common_overrides() {
 ps_init_run_dir() {
   [[ -n "${RUN_DIR:-}" ]] || ps_die "RUN_DIR is required"
   if [[ "${DRY_RUN:-0}" == "1" ]]; then return 0; fi
+  ps_require_launcher_gpu
   if [[ -e "${RUN_DIR}/COMPLETE" ]]; then echo "already complete: ${RUN_DIR}"; exit 0; fi
   if [[ -e "${RUN_DIR}/STARTED" && "${ALLOW_RESUME:-0}" != "1" ]]; then
     ps_die "refusing to append to a started run ${RUN_DIR} (set ALLOW_RESUME=1 to resume)"
@@ -147,6 +158,7 @@ ps_launch() {
     echo "DRY_RUN_OK"
     return 0
   fi
+  ps_require_launcher_gpu
   mkdir -p "${RUN_DIR}/torchinductor_cache" "${RAY_TMPDIR:-${RUN_DIR}/ray_tmp}" "${RUN_DIR}/metrics"
   local rc
   (

@@ -14,7 +14,7 @@ model="${MODEL:-/data/huggingface/hub/models--Qwen--Qwen3.5-4B/snapshots/851bf6e
 # Defaults: the in-repo prep output (examples/precision_scheduler/data/prepare_gsm8k.py, see
 # examples/precision_scheduler/README.md "Data") and the in-repo reward module.
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-data="${DATA_DIR:-${PS_DATA_ROOT:-/data/huanchen/ps_data}/gsm8k_messages_2048}"
+data="${DATA_DIR:-${PS_DATA_ROOT:?set DATA_DIR or PS_DATA_ROOT}/gsm8k_messages_2048}"
 reward="${REWARD_SCRIPT:-${repo}/examples/precision_scheduler/rewards.py}"
 python_bin="${PYTHON_BIN:-python}"
 train_batch_size="${TRAIN_BATCH_SIZE:-8}"

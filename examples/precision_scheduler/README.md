@@ -38,12 +38,16 @@ scripts/precision_scheduler/env/check_env.py --pick-gpus 1
 ```
 
 Every GPU command runs under `scripts/precision_scheduler/env/run_gpu.sh --gpus <N> --timeout <s> -- <cmd>`
-(process-group kill, private Ray temp dir, leftover check). Details: `scripts/precision_scheduler/env/SETUP.md`.
+(process-group kill, private Ray temp dir, leftover check); `ps_launch` refuses to start without
+`CUDA_VISIBLE_DEVICES` or with GPU 1 in it. Details: `scripts/precision_scheduler/env/SETUP.md`.
 
 ## Data
 
-Default `DATA_DIR` is `$PS_DATA_ROOT/gsm8k_messages_2048` with `PS_DATA_ROOT=/data/huanchen/ps_data`.
-Nothing under it is committed; regenerate with:
+Default `DATA_DIR` is `$PS_DATA_ROOT/gsm8k_messages_2048`; `PS_DATA_ROOT` has no default (export it, e.g.
+`/data/huanchen/ps_data` on the measurement host, or set `DATA_DIR`). Nothing under it is committed;
+regenerate with the commands below. The prep scripts default to the local hub snapshots under
+`/data/huggingface/hub` (`prepare_bigmath.py --source`, `prepare_eos_workloads.py --hub-root`), override
+them on another host:
 
 ```bash
 Q=Qwen/Qwen3.5-4B   # or a local snapshot; only used for the token statistics
@@ -94,7 +98,8 @@ POLICY=tail_t8 INITIAL_BATCH=64 RESPONSE_CAP=24576 TOTAL_STEPS=2 \
 python tools/validate_rollout_run.py $RUN_DIR --expected-requests 64 --steps 2 --require-complete
 # full RL, 30 steps
 POLICY=full_w4 TRAIN_BATCH_SIZE=16 TOTAL_STEPS=30 bash examples/precision_scheduler/recipes/full_step.sh
-# continuous EMA (C6 watcher sidecar; baseline traces + heatmap from the profiling toolkit)
+# continuous EMA (C6 watcher sidecar; baseline traces + heatmap from the profiling toolkit); the runner
+# also gets precision_scheduler.policy_barrier_timeout_s=${POLICY_BARRIER_TIMEOUT_S:-600} (static policies keep 0)
 POLICY_PATH=$RUN_DIR/policy.json BF_TRACE=... W4_TRACE=... HEATMAP=... TOTAL_STEPS=30 RUNNER=rollout_only \
   bash examples/precision_scheduler/recipes/continuous_ema.sh
 # any recipe: DRY_RUN=1 prints the override list; extra arguments are appended as Hydra overrides

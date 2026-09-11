@@ -29,6 +29,11 @@ launcher `case` statements, hand-exported environment variables and copy-pasted 
 * **DRY_RUN=1** prints `OVERRIDE<TAB><override>` lines and exits 0: the unit tests compose exactly what
   a launch would compose. Every recipe passes extra positional arguments through as overrides.
 
+`ps_launch` refuses to start without `CUDA_VISIBLE_DEVICES` (set by `run_gpu.sh`) or with GPU 1 in it
+(decision 13), and `continuous_ema.sh` keeps its runner in the recipe's own process group (killing
+descendants via `pgrep -P`) so the launcher's group kill and leftover check still cover the trainer.
+`PS_DATA_ROOT` has no default (the README documents the layout); the `/data/huggingface` snapshot
+defaults of the prep scripts are kept and documented.
 The trainer is started with `cwd=$RUN_DIR/metrics` so upstream's `FileLogger` (which reads
 `VERL_FILE_LOGGER_ROOT`, default `.`) writes `metrics/<project>/<experiment>.jsonl` without any
 environment variable; `hydra.run.dir` goes to `logs/hydra`. The only exported variable is
@@ -102,6 +107,13 @@ Question: does W4 rollout (uniform, or EMA-scheduled BF16 -> W4) change the lear
 3. **Arms.** `bf16`, `full_w4` (archived name `pure_w4`) and an EMA policy (`continuous_ema.sh RUNNER=full_step`
    with C6's watcher calibrated from BF16 and Tail-W4@8K rollout-only calibration traces), all with seed 42,
    B = 16 x 4, cap 24576, re-prefill off, 100 steps, checkpoints every 10 steps.
+   Calibration-acceptance gate of the dynamic arm (PROTOCOL.md): BF16 calibration uses four 64-response
+   rollouts; Tail-W4 uses the first four 64-response rollouts for fitting and a fifth, held-out rollout
+   for validation. Acceptance requires the held-out cohort's mean suffix length *and* cap-survival fraction
+   to fall inside the 95% nonparametric predictive-bootstrap intervals formed from the four fitting
+   cohorts. On failure the held-out cohort stays held out; at most one predefined expansion may collect
+   256 additional fitting responses plus a new disjoint 64-response held-out cohort, and dynamic training
+   cannot start until that second validation passes.
 4. **Evaluation.** Every checkpoint on the common BF16 base with `evaluate_lora_patch.py` (temperature 0, seed
    20260825, cap 8192, Wilson 95% CI): monitor (256) at steps 0, 10, ..., 100; validation (1024) at 0, 50, 100.
    The step-0 point loads the shared adapter through the LoRA path (enabling LoRA changes tie-breaking
@@ -164,6 +176,9 @@ All default off / vanilla in the YAML; the recipes set them explicitly.
   (15 configurations; every `efficiency_window.aggregates` reproduced exactly; the three B128 arms have
   more steps on disk now than when the archived summaries were generated, so their reward summaries are
   compared on the archived prefix).
+* `clean_bigmath_learnability` (the 20260904 search crashed before writing dumps) and `eos_hazard/*`
+  (the non-math workloads were screened in the vLLM-only harness, no verl dump) have no archived rollout
+  dump: those two branches are unit-tested only.
 * Reward dumps re-scored exactly: `no_reprefill.../runs/b64/tail_t8/rollouts/1.jsonl` (256 rows),
   `hardmath.../runs/train_pure_w4_exact1_auto_gate/rollouts/1.jsonl`, `eos_hazard_fullstep.../phi4_mini_reasoning/math500/bf16/main/rollouts/1.jsonl`,
   `bf16_learnability_search_20260827/runs/full_lr3_n8_nokl/rollouts/1.jsonl` (24 rows each for the Math-Verify families).

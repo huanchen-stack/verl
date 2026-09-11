@@ -20,7 +20,9 @@ archived ones so re-scoring an archived rollout dump reproduces the stored rewar
 * ``openai/gsm8k``            last number of the final 2000 characters, Decimal-equal to the gold
                               (commas stripped);
 * ``bigmath_math_verify``     last ``<answer>...</answer>`` re-boxed as ``\\boxed{}`` (or the raw text)
-                              through ``verl.utils.reward_score.math_verify``; binary;
+                              through ``verl.utils.reward_score.math_verify``; binary. The archived
+                              ``universal_reward.py`` (eos math500 / bigmath_hard) passed the raw string
+                              without re-boxing; both give the same score on every archived dump;
 * ``bigmath_qerl_search`` /   same accuracy plus a 0.1 format bonus when an answer tag and
   ``clean_bigmath_learnability`` ``</think>`` are present (the BF16 learnability searches; the archived
                               20260904 search crashed on its own ``clean_bigmath_learnability`` source);

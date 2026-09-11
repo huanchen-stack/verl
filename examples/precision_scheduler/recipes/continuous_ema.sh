@@ -42,7 +42,13 @@ fi
 
 runner_env=(RUN_DIR="${RUN_DIR}" INITIAL_BATCH="${batch}" RESPONSE_CAP="${cap}" TOTAL_STEPS="${steps}"
   POLICY="${policy_path}" PROJECT_NAME="${PROJECT_NAME:-continuous_ema}")
-runner_overrides=("${ps}.reload_policy_each_rollout=true" "$@")
+# The trainer waits (up to POLICY_BARRIER_TIMEOUT_S) before each rollout until the watcher advanced
+# calibration.policy_revision; 0 would let a rollout run on a stale revision (config.md).
+runner_overrides=(
+  "${ps}.reload_policy_each_rollout=true"
+  "${ps}.policy_barrier_timeout_s=${POLICY_BARRIER_TIMEOUT_S:-600}"
+  "$@"
+)
 if [[ -n "${RUNNER_CMD:-}" ]]; then
   read -r -a runner_cmd <<<"${RUNNER_CMD}"
 else
@@ -66,7 +72,9 @@ mkdir -p "${RUN_DIR}/traces" "${RUN_DIR}/logs"
 
 "${watcher[@]}" >"${RUN_DIR}/logs/online_ema_watcher.log" 2>&1 &
 watcher_pid=$!
-setsid env "${runner_env[@]}" "${runner_cmd[@]}" "${runner_overrides[@]}" &
+# The runner stays in this recipe's own process group (decision 13: run_gpu.sh's group kill and
+# leftover check must still cover the trainer); kill_runner walks the descendants instead.
+env "${runner_env[@]}" "${runner_cmd[@]}" "${runner_overrides[@]}" &
 runner_pid=$!
 
 completed_steps() {
@@ -74,10 +82,17 @@ completed_steps() {
   [[ -f "${state}" ]] || { echo 0; return; }
   "${PS_PYTHON}" -c 'import json,sys; print(int(json.load(open(sys.argv[1])).get("completed_steps", 0)))' "${state}" 2>/dev/null || echo 0
 }
+descendants() {  # depth-first list of $1 and every descendant pid
+  local pid="$1" child
+  for child in $(pgrep -P "${pid}" 2>/dev/null); do descendants "${child}"; done
+  echo "${pid}"
+}
 kill_runner() {
-  kill -INT -- "-${runner_pid}" 2>/dev/null || true
+  local pids; pids="$(descendants "${runner_pid}")"
+  kill -INT ${pids} 2>/dev/null || true
   for _ in 1 2 3 4 5; do kill -0 "${runner_pid}" 2>/dev/null || break; sleep 1; done
-  kill -KILL -- "-${runner_pid}" 2>/dev/null || true
+  pids="$(descendants "${runner_pid}")"
+  kill -KILL ${pids} 2>/dev/null || true
   wait "${runner_pid}" 2>/dev/null || true
 }
 cleanup() {

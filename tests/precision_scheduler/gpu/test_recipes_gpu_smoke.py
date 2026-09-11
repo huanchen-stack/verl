@@ -14,8 +14,8 @@
 """gpu-smoke: the two C10 recipe smokes (Qwen3.5-4B, GSM8K, precision_scheduler.enable=false).
 
 Each test launches its recipe through the decision-13 launcher (``run_gpu.sh``) on the GPU named by
-``PS_SMOKE_GPU`` (default 4) with a 40-minute budget, then validates the run directory with
-``tools/validate_rollout_run.py``:
+``PS_SMOKE_GPU`` (default: one free allowed GPU from ``check_env.py --pick-gpus 1``) with a 40-minute
+budget, then validates the run directory with ``tools/validate_rollout_run.py``:
 
 * ``rollout_only.sh`` 2 steps, 4 prompts x 4 samples on an 8-row parquet (``PS_SMOKE_DATA_DIR``);
 * ``full_step.sh`` 1 step + ``trainer.save_initial_checkpoint=true`` (global_step_0 and global_step_1),
@@ -46,7 +46,20 @@ MODEL = os.environ.get(
     "/data/huggingface/hub/models--Qwen--Qwen3.5-4B/snapshots/851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a",
 )
 DATA_DIR = os.environ.get("PS_SMOKE_DATA_DIR", "/data/huanchen/ps_data/gsm8k_smoke_8")
-GPU = os.environ.get("PS_SMOKE_GPU", "4")
+CHECK_ENV = REPO / "scripts" / "precision_scheduler" / "env" / "check_env.py"
+
+
+def _pick_gpu() -> str:
+    """PS_SMOKE_GPU, or one free allowed GPU from the decision-13 preflight."""
+    if os.environ.get("PS_SMOKE_GPU"):
+        return os.environ["PS_SMOKE_GPU"]
+    proc = subprocess.run([sys.executable, str(CHECK_ENV), "--pick-gpus", "1"], capture_output=True, text=True)
+    if proc.returncode != 0 or not proc.stdout.strip():
+        pytest.skip(f"no free GPU: {proc.stderr.strip()[-300:]}")
+    return proc.stdout.strip().split(",")[0]
+
+
+GPU = _pick_gpu() if os.environ.get("PS_RUN_GPU_SMOKE") == "1" or "gpu_smoke" in " ".join(sys.argv) else ""
 TIMEOUT = 2400
 
 pytestmark = pytest.mark.gpu_smoke
@@ -60,6 +73,7 @@ def _require_inputs():
 
 
 def _launch(recipe: str, run_dir: Path, env_extra: dict[str, str], *overrides: str) -> None:
+    assert GPU, "no GPU picked"
     env = dict(os.environ)
     env.update(
         {
