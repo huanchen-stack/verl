@@ -1,0 +1,27 @@
+{
+ "model": "/data/huggingface/hub/models--Qwen--Qwen3.5-4B/snapshots/851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a",
+ "batch_sizes": [
+  1,
+  2,
+  4,
+  8,
+  16,
+  32
+ ],
+ "seq_lens": [
+  1024,
+  2048,
+  3072,
+  4096,
+  5120,
+  6144,
+  7168,
+  8192,
+  12288,
+  16384
+ ],
+ "measurement_repetitions": 1,
+ "full_cudagraph_without_torch_compile": null,
+ "git_sha": "34e66a379d3794cf79a870cb4fad22d7ae407fde",
+ "status": "complete"
+}
