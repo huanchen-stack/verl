@@ -205,6 +205,11 @@ class RolloutConfig(BaseConfig):
     max_model_len: Optional[int] = None
     max_num_seqs: int = 1024
 
+    # Optional override for the rollout engine's base model path. When unset,
+    # rollout reuses actor_rollout_ref.model.path. Lets a BF16 actor/ref train
+    # while vLLM serves a different base checkpoint (e.g. an INT4 rollout model).
+    model_path: Optional[str] = None
+
     # note that the logprob computation should belong to the actor
     log_prob_micro_batch_size: Optional[int] = None
     log_prob_micro_batch_size_per_gpu: Optional[int] = None
