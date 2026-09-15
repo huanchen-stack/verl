@@ -153,12 +153,11 @@ ps_common_overrides() {
 }
 
 # Decision 13: GPU launches go through scripts/precision_scheduler/env/run_gpu.sh, which sets
-# CUDA_VISIBLE_DEVICES (never GPU 1), owns the process group and checks for leftovers.
+# CUDA_VISIBLE_DEVICES, owns the process group and checks for leftovers.
 ps_require_launcher_gpu() {
   if [[ -z "${CUDA_VISIBLE_DEVICES:-}" ]]; then
     ps_die "CUDA_VISIBLE_DEVICES is not set: launch under scripts/precision_scheduler/env/run_gpu.sh"
   fi
-  case ",${CUDA_VISIBLE_DEVICES}," in *,1,*) ps_die "GPU 1 is never allowed (decision 13)";; esac
 }
 
 # ps_init_run_dir -> creates the layout, refuses to append to a started run, writes run_config.json

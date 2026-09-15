@@ -427,13 +427,9 @@ def test_data_root_is_required(tmp_path):
 
 
 def test_launch_refuses_without_launcher_gpu(tmp_path):
-    """Decision 13: a real launch needs CUDA_VISIBLE_DEVICES from run_gpu.sh and never GPU 1."""
+    """Decision 13: a real launch needs CUDA_VISIBLE_DEVICES from run_gpu.sh (any GPU id is allowed)."""
     base = {k: v for k, v in os.environ.items() if k not in ("CUDA_VISIBLE_DEVICES", "DRY_RUN")}
     base.update(RUN_DIR=str(tmp_path / "r"), POLICY="bf16", PS_DATA_ROOT=str(tmp_path), PYTHON_BIN="python")
     proc = subprocess.run(["bash", str(RECIPES["rollout_only"])], env=base, capture_output=True, text=True)
     assert proc.returncode == 2 and "run_gpu.sh" in proc.stderr
-    proc = subprocess.run(
-        ["bash", str(RECIPES["rollout_only"])], env=dict(base, CUDA_VISIBLE_DEVICES="1"), capture_output=True, text=True
-    )
-    assert proc.returncode == 2 and "GPU 1" in proc.stderr
     assert not (tmp_path / "r").exists(), "the run directory is not created before the preflight"

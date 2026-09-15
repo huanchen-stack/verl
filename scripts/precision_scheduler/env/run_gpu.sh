@@ -5,7 +5,7 @@
 #
 # Runs <command> in its own process group with CUDA_VISIBLE_DEVICES set to the given GPUs, kills the
 # whole group on exit / timeout / Ctrl-C (Ray started under the private RAY_TMPDIR dies with it), and fails
-# with rc 4 if a process of ours is still on those GPUs afterwards. Refuses GPU 1 (rc 2) and refuses
+# with rc 4 if a process of ours is still on those GPUs afterwards. Refuses
 # to start on a GPU that already has a compute process or more than 2048 MiB in use (rc 3). Otherwise
 # the exit code is the command's. Pick free GPUs first with `check_env.py --pick-gpus N`.
 set -uo pipefail
@@ -13,7 +13,6 @@ GPUS=""; TIMEOUT=0
 while [ $# -gt 0 ]; do case "$1" in
   --gpus) GPUS=$2; shift 2;; --timeout) TIMEOUT=$2; shift 2;; --) shift; break;; *) echo "bad arg $1" >&2; exit 2;; esac; done
 [ -n "$GPUS" ] || { echo "run_gpu.sh: --gpus required" >&2; exit 2; }
-case ",$GPUS," in *,1,*) echo "run_gpu.sh: GPU 1 is never allowed" >&2; exit 2;; esac
 for g in ${GPUS//,/ }; do
   used=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits -i "$g")
   procs=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader -i "$g" | wc -l)

@@ -19,10 +19,10 @@ Three independent modes, composable on one command line:
   --expect clean|dirty|vanilla   verify that the process is running under the matching
                                  ``activate.sh`` environment (see ``ENVIRONMENT.md``); exit 1 with
                                  one line per failed check.
-  --pick-gpus N                  print N free GPU ids (from the allowed set {0,2,3,4,5,6,7}) comma
+  --pick-gpus N                  print N free GPU ids (from the allowed set {0,...,7}) comma
                                  separated on stdout; exit 3 if fewer than N are free. A GPU is not
                                  free when it hosts a compute process owned by another user or has
-                                 more than 2048 MiB in use. GPU 1 is never returned (decision 13).
+                                 more than 2048 MiB in use.
   --write-version-file ROOT      write an honest, gitignored ``ROOT/vllm/_version.py`` naming the
                                  commit the precompiled payload was built for.
 
@@ -82,7 +82,7 @@ assert len(PRECOMPILED_PAYLOAD) == 17
 TE_PATCH_REL = "transformer_engine/pytorch/attention/dot_product_attention/utils.py"
 TE_PATCH_LINE = 'max_version = PkgVersion("2.8.3.post1")'
 
-ALLOWED_GPUS = (0, 2, 3, 4, 5, 6, 7)
+ALLOWED_GPUS = (0, 1, 2, 3, 4, 5, 6, 7)
 GPU_BUSY_MIB = 2048
 ENV_KINDS = ("clean", "dirty", "vanilla")
 

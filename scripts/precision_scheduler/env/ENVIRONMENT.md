@@ -212,7 +212,8 @@ Dropped from the experimental `vllm_env_extra_deps` shim directory (584 MB in th
 
 ## 9. GPU discipline (decision 13)
 
-GPU 1 is never used. `check_env.py --pick-gpus N` selects from `{0,2,3,4,5,6,7}`, excludes any GPU
+`check_env.py --pick-gpus N` selects from all GPUs `{0,...,7}` (the GPU 1 exclusion of the original
+measurement host was dropped on 2026-09-14: this host has no reserved GPU), excludes any GPU
 with a compute process owned by another user or more than 2048 MiB in use, prints N ids and exits
 3 when fewer are free. `run_gpu.sh --gpus <ids> [--timeout s] -- <cmd>` runs the command in its
 own process group with `CUDA_VISIBLE_DEVICES` set, uses a private `RAY_TMPDIR`, kills the group

@@ -207,8 +207,9 @@ def test_free_gpus_filters_foreign_and_busy(ce):
     procs = {0: [], 1: [], 2: [], 3: [111], 4: [], 5: [222, 333], 6: [], 7: [444]}
     owners = {111: "me", 222: "me", 333: "other", 444: "other"}
     free = ce.free_gpus(used, procs, me="me", owner_of=lambda p: owners.get(p))
-    # 1 never; 2 too much memory; 5 and 7 have foreign processes; 3 (own process, 10 MiB) and 4 (== limit) stay
-    assert free == [0, 3, 4, 6]
+    # 2 too much memory; 5 and 7 have foreign processes; 3 (own process, 10 MiB) and 4 (== limit) stay;
+    # 1 is an ordinary GPU on this host
+    assert free == [0, 1, 3, 4, 6]
 
 
 def test_free_gpus_ignores_absent_indices(ce):
@@ -338,14 +339,12 @@ def test_run_gpu_watchdog_and_leftover_scoping():
     assert "ps -o sid=" in code, "leftovers are identified by session id, not by user (shared account)"
 
 
-def test_run_gpu_refuses_gpu_1_and_missing_gpus():
+def test_run_gpu_accepts_gpu_1_and_refuses_missing_gpus():
+    # GPU 1 is an ordinary GPU on this host (the original measurement host's exclusion was dropped
+    # 2026-09-14): the launcher must not reject it by id. It may still refuse it as busy (rc 3).
     r = subprocess.run(
         ["bash", str(ENV_DIR / "run_gpu.sh"), "--gpus", "1", "--", "true"], capture_output=True, text=True
     )
-    assert r.returncode == 2 and "GPU 1 is never allowed" in r.stderr
-    r = subprocess.run(
-        ["bash", str(ENV_DIR / "run_gpu.sh"), "--gpus", "0,1", "--", "true"], capture_output=True, text=True
-    )
-    assert r.returncode == 2
+    assert r.returncode != 2 and "never allowed" not in r.stderr, r.stderr
     r = subprocess.run(["bash", str(ENV_DIR / "run_gpu.sh"), "--", "true"], capture_output=True, text=True)
     assert r.returncode == 2 and "--gpus required" in r.stderr
