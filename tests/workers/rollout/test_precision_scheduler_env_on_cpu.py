@@ -94,7 +94,7 @@ def test_defaults_are_off_and_vanilla_emits_empty_env():
     assert cfg.lora_fuse_packed is True
     assert cfg.int4_model is None
     assert cfg.policy == ""
-    assert cfg.bf16_layers == "first:3,last:3"
+    assert cfg.bf16_layers == "none"
     assert cfg.int4_modules == "all"
     assert cfg.reprefill is False
     assert cfg.sleep_level is None
@@ -140,7 +140,7 @@ def test_headline_env_matches_archived_allowlist_golden():
     assert env["VLLM_ROLLOUT_LORA_FUSE_PACKED"] == "1"
     assert env["VLLM_DUAL_PRECISION_INT4_MODEL"] == "/models/qwen3.5-9b-w4"
     assert env["VLLM_DUAL_PRECISION_POLICY"] == "/runs/policy.json"
-    assert env["VLLM_DUAL_PRECISION_BF16_LAYERS"] == "first:3,last:3"
+    assert env["VLLM_DUAL_PRECISION_BF16_LAYERS"] == "none"
     assert env["VLLM_DUAL_PRECISION_INT4_MODULES"] == "all"
     assert env["VLLM_DUAL_PRECISION_REPREFILL"] == "0"
     assert env["VLLM_DUAL_PRECISION_RELOAD_POLICY_EACH_ROLLOUT"] == "0"

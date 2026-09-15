@@ -88,7 +88,7 @@ class PrecisionSchedulerConfig(BaseConfig):
     lora_fuse_packed: bool = True
     int4_model: Optional[str] = None
     policy: str = ""
-    bf16_layers: str = "first:3,last:3"
+    bf16_layers: str = "none"
     int4_modules: str = "all"
     reprefill: bool = False
     sleep_level: Optional[int] = None

@@ -513,7 +513,7 @@ precision_scheduler:
   policy: ""
 
   # Layers kept in BF16 while the rest run INT4 (VLLM_DUAL_PRECISION_BF16_LAYERS).
-  bf16_layers: "first:3,last:3"
+  bf16_layers: "none"
 
   # Module classes eligible for INT4 (VLLM_DUAL_PRECISION_INT4_MODULES).
   int4_modules: "all"

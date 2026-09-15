@@ -419,7 +419,7 @@ actor_rollout_ref:
       lora_fuse_packed: true
       int4_model: null
       policy: ''
-      bf16_layers: first:3,last:3
+      bf16_layers: none
       int4_modules: all
       reprefill: false
       sleep_level: null

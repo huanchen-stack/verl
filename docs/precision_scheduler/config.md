@@ -18,7 +18,7 @@ set them by hand. The table below is the single documentation of that wire forma
 | `lora_fuse_packed` | `VLLM_ROLLOUT_LORA_FUSE_PACKED` | bool, `true` | Fuse packed qkv / gate_up LoRA slices into one GEMM pair. |
 | `int4_model` | `VLLM_DUAL_PRECISION_INT4_MODEL` | str, `null` | Path to the INT4 shadow checkpoint. |
 | `policy` | `VLLM_DUAL_PRECISION_POLICY` | str, `""` | `fixed_threshold:<t>`, `fixed_frontier:<K>`, `uniform_w4`, or a path to an EMA policy JSON (decision 6). |
-| `bf16_layers` | `VLLM_DUAL_PRECISION_BF16_LAYERS` | str, `"first:3,last:3"` | Layers that stay BF16 while the rest run INT4. |
+| `bf16_layers` | `VLLM_DUAL_PRECISION_BF16_LAYERS` | str, `"none"` | Layers that stay BF16 while the rest run INT4; `none` (the default) runs every quantized block INT4. |
 | `int4_modules` | `VLLM_DUAL_PRECISION_INT4_MODULES` | str, `"all"` | Module classes eligible for INT4. |
 | `reprefill` | `VLLM_DUAL_PRECISION_REPREFILL` | bool, `false` | Re-prefill survivors after a switch (decision 5 ablation). |
 | `sleep_level` | (none: resolved in verl) | int, `null` | Forced vLLM sleep level. `null` = automatic; forced to 1 when `enable` is true. |
