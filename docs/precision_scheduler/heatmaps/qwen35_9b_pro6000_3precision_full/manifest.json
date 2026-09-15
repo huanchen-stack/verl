@@ -1,0 +1,41 @@
+{
+  "base_models": {
+    "bf16": "Qwen/Qwen3.5-9B",
+    "int4": "sanskar003/Qwen3.5-9B-AWQ",
+    "nvfp4": "AxionML/Qwen3.5-9B-NVFP4"
+  },
+  "batch_sizes": [
+    1,
+    2,
+    4,
+    8,
+    16,
+    32
+  ],
+  "finished_at": 1789514605.8879664,
+  "git_sha": "e8e48b828a286df14e35a66324d14a038332958d",
+  "int4_model": "sanskar003/Qwen3.5-9B-AWQ",
+  "median_speedup_bf16_over_int4": 1.7861305167751507,
+  "median_speedup_bf16_over_nvfp4": 1.737348881483713,
+  "model": "Qwen/Qwen3.5-9B",
+  "nvfp4_model": "AxionML/Qwen3.5-9B-NVFP4",
+  "precisions": [
+    "bf16",
+    "int4",
+    "nvfp4"
+  ],
+  "seq_lens": [
+    1024,
+    2048,
+    3072,
+    4096,
+    5120,
+    6144,
+    7168,
+    8192,
+    12288,
+    16384
+  ],
+  "standalone_base_precision": true,
+  "status": "complete"
+}
