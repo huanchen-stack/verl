@@ -94,6 +94,7 @@ class OnlineEmaWatcher:
         grid: PolicyGrid,
         alpha: float,
         slope: float,
+        w4_token_penalty: float = 0.0,
         steps: int,
         trace_name: str = DEFAULT_TRACE,
         cohort_name: str = DEFAULT_COHORTS,
@@ -106,6 +107,7 @@ class OnlineEmaWatcher:
         self.grid = grid
         self.alpha = float(alpha)
         self.slope = float(slope)
+        self.w4_token_penalty = float(w4_token_penalty)
         self.steps = int(steps)
         self.trace_path = self.run_dir / trace_name
         self.cohort_path = self.run_dir / cohort_name
@@ -150,6 +152,7 @@ class OnlineEmaWatcher:
             cache=self._cache,
             calibration_kind=str(self.calibration.metadata.get("kind", "unknown")) + " plus online delayed-entry EMA",
             extra_calibration={"base_source": self.calibration.metadata, "updates": len(processed)},
+            w4_token_penalty=self.w4_token_penalty,
         )
         write_policy_atomic(self.policy_path, policy)
         state = {

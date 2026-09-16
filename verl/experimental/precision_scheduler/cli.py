@@ -55,6 +55,12 @@ def _add_calibration_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--heatmap", type=Path, required=True, help="profiler heatmap.json")
     parser.add_argument("--alpha", type=float, default=0.2, help="EMA weight of each new switch cohort")
     parser.add_argument("--downstream-slope", type=float, default=0.0, help="downstream seconds per sampled token")
+    parser.add_argument(
+        "--w4-token-penalty",
+        type=float,
+        default=0.0,
+        help="quality price in seconds per expected INT4-decoded token, charged on the W4 segment (0 = cost only)",
+    )
     parser.add_argument("--skip-heatmap-guard", action="store_true", help="accept a heatmap with median speedup ~1.0")
 
 
@@ -78,6 +84,7 @@ def cmd_build_policy(args: argparse.Namespace) -> int:
         args.alpha,
         calibration_kind=calibration.metadata["kind"],
         extra_calibration={"base_source": calibration.metadata},
+        w4_token_penalty=args.w4_token_penalty,
     )
     write_policy_atomic(args.output, policy)
     print(
@@ -103,6 +110,7 @@ def cmd_watch_ema(args: argparse.Namespace) -> int:
         grid=grid,
         alpha=args.alpha,
         slope=args.downstream_slope,
+        w4_token_penalty=args.w4_token_penalty,
         steps=args.steps,
         trace_name=args.trace_name,
         cohort_name=args.cohort_name,

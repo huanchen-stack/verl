@@ -63,11 +63,28 @@ REQUIRED_COST_MODEL = ("response_cap", "downstream_seconds_per_token", "switch_o
 
 
 def build_decisions(
-    bf: HazardTable, w4: HazardTable, cache: dict[str, np.ndarray], grid: PolicyGrid, slope: float
+    bf: HazardTable,
+    w4: HazardTable,
+    cache: dict[str, np.ndarray],
+    grid: PolicyGrid,
+    slope: float,
+    w4_token_penalty: float = 0.0,
 ) -> np.ndarray:
-    """Dense committed-frontier table ``[frontier, prompt bucket, live]`` (0 = never switch)."""
+    """Dense committed-frontier table ``[frontier, prompt bucket, live]`` (0 = never switch).
+
+    ``w4_token_penalty`` (seconds per expected INT4-decoded token, default 0) prices the quality
+    cost of decoding under the INT4 shadow. It is charged on the W4 segment only, exactly like
+    the downstream slope, so it is a monotone cost term under the receding-horizon lookup: the
+    predicted rollout-plus-downstream cost is flat over a wide band of switch frontiers (within a
+    few percent from ~1K to ~8K tokens on Qwen3.5-9B) while uniform W4 costs several reward
+    points, and this term moves the committed frontier to the late edge of that band. ``0``
+    reproduces the original cost-only search.
+    """
+    if w4_token_penalty < 0:
+        raise ValueError("w4_token_penalty must be >= 0")
     frontiers = grid.frontiers
     decisions = np.zeros(grid.shape, dtype=np.int64)
+    w4_slope = slope + w4_token_penalty
     for fi in range(len(frontiers)):
         bf_alive = survival(bf, fi)
         stay = trajectory_cost_grid(cache, grid, "bf16", fi, bf_alive, slope)
@@ -78,7 +95,7 @@ def build_decisions(
             prefix = trajectory_cost_grid(cache, grid, "bf16", fi, bf_alive[:prefix_bins], slope)
             reach = float(bf_alive[prefix_bins])
             w4_alive = survival(w4, future_fi) * reach
-            candidate = prefix + trajectory_cost_grid(cache, grid, "w4", future_fi, w4_alive, slope)
+            candidate = prefix + trajectory_cost_grid(cache, grid, "w4", future_fi, w4_alive, w4_slope)
             improve = candidate < best_cost
             best_cost[improve] = candidate[improve]
             best_frontier[improve] = int(frontiers[future_fi])
@@ -153,11 +170,12 @@ def build_policy(
     calibration_kind: str = "paired BF16/full-W4 baseline traces plus online delayed-entry EMA",
     cache: dict[str, np.ndarray] | None = None,
     extra_calibration: dict[str, Any] | None = None,
+    w4_token_penalty: float = 0.0,
 ) -> tuple[dict[str, Any], int]:
     """Run the global search and return ``(policy_json, switch_states)``."""
     if cache is None:
         cache = make_tpot_cache(grid, tpot)
-    decisions = build_decisions(bf, w4, cache, grid, slope)
+    decisions = build_decisions(bf, w4, cache, grid, slope, w4_token_penalty=w4_token_penalty)
     if description is None:
         description = f"B{grid.batch} cap{grid.cap // 1024}K model-specific EMA future-frontier global full-cost lookup"
     calibration = {
@@ -169,6 +187,7 @@ def build_policy(
     if extra_calibration:
         calibration.update(extra_calibration)
     policy = policy_from_decisions(decisions, grid, description=description, calibration=calibration, slope=slope)
+    policy["offline_cost_model"]["w4_token_penalty_seconds"] = float(w4_token_penalty)
     return policy, int(np.count_nonzero(decisions))
 
 
