@@ -14,7 +14,7 @@ exports and what the decision-13 launcher `run_gpu.sh` sets (`CUDA_VISIBLE_DEVIC
 | Path | Purpose |
 |---|---|
 | `common.sh` | shared helpers: `ps_resolve_policy` (POLICY name -> `rollout.precision_scheduler.*` overrides), `ps_common_overrides` (model overlay, data, reward, tracing, host isolation, run-dir layout), `ps_init_run_dir` (STARTED / COMPLETE / FAILED markers, `run_config.json`), `ps_launch` (DRY_RUN or `python -m verl.trainer.main_ppo`) |
-| `run_fullstep.sh` | the single-GPU (TP=1, DP=1) GRPO driver; `TRAINER=megatron` (default, the reporting trainer: Megatron-Core via Megatron-Bridge, LoRA through `model.lora.*`) or `TRAINER=fsdp2` (smoke tests and ablations only); every training knob is a shell variable with the archived default |
+| `run_fullstep.sh` | the single-GPU (TP=1, DP=1) GRPO driver; `TRAINER=megatron` (default, the reporting trainer: Megatron-Core via Megatron-Bridge, LoRA through `model.lora.*`) or `TRAINER=fsdp2` (CPU compose tests only; never for GPU runs, decision 10); every training knob is a shell variable with the archived default |
 | `run_megatron_fullstep.sh`, `run_fsdp_fullstep.sh` | two-line wrappers that pin `TRAINER` |
 | `recipes/rollout_only.sh` | generation + reward only, N steps (`trainer.rollout_only=true`) |
 | `recipes/full_step.sh` | full GRPO steps (rollout, old log-prob, ref, update, weight sync) |
@@ -117,8 +117,8 @@ MAX_CKPT_TO_KEEP=2 USE_FUSED_KERNELS=true USE_DYNAMIC_BSZ=true GRADIENT_CHECKPOI
 ACTOR_PARAM_OFFLOAD=false CALCULATE_LOG_PROBS=True PORT_BASE=47000+300*gpu RUN_TIMEOUT=12h`; Megatron only:
 `RECOMPUTE_GRANULARITY=full RECOMPUTE_METHOD=uniform RECOMPUTE_NUM_LAYERS=1 ATTENTION_BACKEND=auto
 ACTOR_GRAD_OFFLOAD=false ACTOR_OPTIMIZER_OFFLOAD=false`. The Qwen3.5 overlays carry the Megatron LoRA block
-(`model.lora.target_modules` in mcore names); Phi-4-mini and Gemma4 have no Megatron-Bridge mapping and run only
-under `TRAINER=fsdp2`.
+(`model.lora.target_modules` in mcore names); Phi-4-mini and Gemma4 have no Megatron-Bridge mapping yet; per decision 10 they
+are not run on FSDP2 — a bridge is written first (C9). `TRAINER=fsdp2` exists for the CPU compose tests only.
 `rollout_only.sh` sets `INITIAL_BATCH=64` (-> `TRAIN_BATCH_SIZE=INITIAL_BATCH/ROLLOUT_N`), cap 24576,
 `CALCULATE_LOG_PROBS=False`; `full_step.sh` sets 30 steps and cap 24576.
 

@@ -2,7 +2,7 @@
 # run_fullstep.sh -- the single-GPU GRPO driver of the precision scheduler (TP=1, DP=1, one vLLM engine).
 # TRAINER selects the training engine: megatron (default; decision 10 reversed 2026-09-16: every
 # reported RL step trains with Megatron-Core through Megatron-Bridge, LoRA via model.lora.*) or fsdp2
-# (kept for smoke tests and ablations; never a reported number). run_megatron_fullstep.sh and
+# (kept for the CPU compose tests only; never for a GPU run, decision 10 amended 2026-09-16). run_megatron_fullstep.sh and
 # run_fsdp_fullstep.sh are two-line wrappers that pin TRAINER.
 #
 # Refactored from .codex-report/new-storyline-experiments/eos_hazard_fullstep_b64_cap16k/run_fsdp_fullstep.sh
