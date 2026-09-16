@@ -26,6 +26,9 @@ verl-side designs live here.
   `PYTHONPATH`, the precompiled payload and the no-native-change rule, the honest version and
   metadata shim, the `LD_LIBRARY_PATH` rule, the TransformerEngine patch with its RECORD-hash
   check, wheel provenance and rebuild triggers.
+- [`RUN_2026-09-16_megatron_mg20.md`](RUN_2026-09-16_megatron_mg20.md): the Megatron TP1
+  replication (decision 10 reversed): the trainer acceptance fit and the Qwen3.5-9B / 4B speedup,
+  token-inflation and reward table for the BF16, uniform-W4, fixed-K and live-EMA arms.
 
 ## Environment tooling (`scripts/precision_scheduler/env/`)
 
