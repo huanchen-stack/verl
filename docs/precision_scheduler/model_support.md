@@ -21,9 +21,11 @@ statements.
 | Nemotron-Nano-9B-v2 | flagged | rope-theta skip + HybridStack hook (Megatron only), identity LoRA targets | `nemotron_h.yaml` |
 | Qwen3.5-27B, Falcon-H1, DeepSeek distills, SmolLM3, GLM-Z1, Kimi-VL, Granite, MiniCPM | dropped | — | — |
 
-Megatron is not first-class on this branch (decision 10: FSDP2 only, TP=1,
-DP=1). The two Megatron helpers and the LoRA target mapping are kept because
-they are cheap, tested, and no-ops elsewhere; no Megatron e2e test exists.
+Megatron TP1 (DP=1) is the training driver for every RL-step experiment
+(decision 10, reversed 2026-09-16; the FSDP2-only cut is withdrawn). The two
+Megatron helpers and the LoRA target mapping are the base for the restored
+driver; a Megatron e2e one-step GRPO test is required before any full-step
+number is reported.
 
 ## Mechanisms
 

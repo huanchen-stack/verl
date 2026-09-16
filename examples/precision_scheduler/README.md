@@ -14,7 +14,7 @@ exports and what the decision-13 launcher `run_gpu.sh` sets (`CUDA_VISIBLE_DEVIC
 | Path | Purpose |
 |---|---|
 | `common.sh` | shared helpers: `ps_resolve_policy` (POLICY name -> `rollout.precision_scheduler.*` overrides), `ps_common_overrides` (model overlay, data, reward, tracing, host isolation, run-dir layout), `ps_init_run_dir` (STARTED / COMPLETE / FAILED markers, `run_config.json`), `ps_launch` (DRY_RUN or `python -m verl.trainer.main_ppo`) |
-| `run_fsdp_fullstep.sh` | the FSDP2 (TP=1, DP=1) GRPO driver; every training knob is a shell variable with the archived default |
+| `run_fsdp_fullstep.sh` | the FSDP2 (TP=1, DP=1) GRPO driver; every training knob is a shell variable with the archived default ; **not the reporting trainer** (decision 10 reversed 2026-09-16: Megatron TP1) |
 | `recipes/rollout_only.sh` | generation + reward only, N steps (`trainer.rollout_only=true`) |
 | `recipes/full_step.sh` | full GRPO steps (rollout, old log-prob, ref, update, weight sync) |
 | `recipes/continuous_ema.sh` | online EMA policy: C6 `watch-ema` sidecar + runner with `reload_policy_each_rollout=true`, fail-closed |
@@ -177,5 +177,5 @@ are recorded here and in the archived `run_config.json` / manifests. None is por
 | `rl-workflow/run_heatmap_budget_batch_optimal_t.sh`, `prepare_heatmap_budget_batch_sweep.py` | 72-cell cap x batch x policy sweep with LPT lane packing | not ported (one-off) |
 | `rl-workflow/run_best_t8_verl_rollout_gpu7.sh` | 4 guard sets x 3 seeds x 5 policies rollout-only matrix | `prepare_gsm8k.py --disjoint-sets` + `recipes/rollout_only.sh` |
 | `hardmath_lora_accuracy_100step_20260825/{launch_main_runs.sh,run_evaluation_matrix.sh,continue_*.sh,run_prelaunch_tests.py,...}` | protocol gates, evaluation matrix over steps 0..100, report builders | `long_run/train_arm.sh`, `long_run/evaluate_lora_patch.py` (loop in the design doc) |
-| `rl-workflow/run_megatron_tp_live_fullstep.sh` and every Megatron wrapper | the Megatron TP1 driver behind the headline Qwen3.5-9B runs | dropped (decision 10); see the design doc |
+| `rl-workflow/run_megatron_tp_live_fullstep.sh` and every Megatron wrapper | the Megatron TP1 driver behind the headline Qwen3.5-9B runs | being restored as `run_megatron_fullstep.sh` (decision 10 reversed 2026-09-16); until it lands, `full_step.sh` still execs the FSDP2 driver and its numbers are not reportable |
 | `rl-workflow/prepare_eurus_*.py`, `data/eurus*` | Eurus/27B timing workloads (pre-storyline) | dropped |
