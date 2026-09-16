@@ -53,9 +53,13 @@ environment variable; `hydra.run.dir` goes to `logs/hydra`. The only exported va
 process-local CUDA handles; the archived driver comment explains a CUDA-graph profiling failure when
 the cache was shared).
 
-### The FSDP2 driver and the recipe shapes
+### The driver and the recipe shapes
 
-`run_fsdp_fullstep.sh` is the archived `eos_hazard_fullstep_b64_cap16k/run_fsdp_fullstep.sh` with the
+`run_fullstep.sh` (decision 10, reversed 2026-09-16) is one driver with a `TRAINER` switch: `megatron` (default; the
+reporting trainer, Megatron-Core through Megatron-Bridge with `use_mbridge=True vanilla_mbridge=False`, LoRA via
+`model.lora.*` with mcore target names from the overlay, full uniform recompute of one layer, TP=1 DP=1) or `fsdp2`.
+`run_megatron_fullstep.sh` / `run_fsdp_fullstep.sh` pin the switch. The fsdp2 block is the archived
+`eos_hazard_fullstep_b64_cap16k/run_fsdp_fullstep.sh` with the
 model resolution replaced by the overlay, the env block by `precision_scheduler.*` and the study
 layout by `RUN_DIR`. Defaults are the archived ones (GRPO, KL loss 0.01 low-var, entropy off, LoRA 16/16,
 temperature 1 / top-p 1 / top-k -1, seed 42, 8192 batched tokens, GMEM 0.50, bucket 4096 MB, fsdp2

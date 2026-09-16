@@ -43,6 +43,7 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures"
 PS = "actor_rollout_ref.rollout.precision_scheduler"
 
 RECIPES = {
+    "run_megatron_fullstep": EXAMPLES / "run_megatron_fullstep.sh",
     "run_fsdp_fullstep": EXAMPLES / "run_fsdp_fullstep.sh",
     "rollout_only": EXAMPLES / "recipes" / "rollout_only.sh",
     "full_step": EXAMPLES / "recipes" / "full_step.sh",
@@ -90,8 +91,14 @@ def _policy_file(tmp_path: Path) -> Path:
 
 @pytest.mark.parametrize("recipe", sorted(RECIPES))
 @pytest.mark.parametrize("policy", sorted(POLICIES))
-def test_recipe_dry_run_composes(recipe, policy, tmp_path):
-    overrides, _ = dry_run(RECIPES[recipe], tmp_path, {"POLICY": policy, "MODEL_KEY": "qwen3_5_4b"})
+@pytest.mark.parametrize("trainer", ("megatron", "fsdp2"))
+def test_recipe_dry_run_composes(recipe, policy, trainer, tmp_path):
+    if recipe.startswith("run_") and recipe != f"run_{trainer}_fullstep":
+        pytest.skip("the wrapper pins its own TRAINER")
+    env = {"POLICY": policy, "MODEL_KEY": "qwen3_5_4b"}
+    if not recipe.startswith("run_"):
+        env["TRAINER"] = trainer
+    overrides, _ = dry_run(RECIPES[recipe], tmp_path, env)
     cfg = compose_overrides(overrides)
     rollout = omega_conf_to_dataclass(cfg.actor_rollout_ref.rollout)
     omega_conf_to_dataclass(cfg.actor_rollout_ref.actor)
@@ -116,7 +123,21 @@ def test_recipe_dry_run_composes(recipe, policy, tmp_path):
     assert cfg.trainer.stable_sample_uid is True and cfg.trainer.ray_master_port_range == "47000:47299"
     assert cfg.trainer.default_local_dir == str(tmp_path / "run" / "checkpoints")
     assert cfg.trainer.rollout_data_dir == str(tmp_path / "run" / "rollouts")
-    assert cfg.actor_rollout_ref.actor.strategy == "fsdp2" and cfg.trainer.n_gpus_per_node == 1
+    assert cfg.actor_rollout_ref.actor.strategy == trainer and cfg.trainer.n_gpus_per_node == 1
+    if trainer == "megatron":
+        # decision 10 (reversed 2026-09-16): Megatron-Bridge PEFT with the mcore target names.
+        assert cfg.model_engine == "megatron"
+        mg = cfg.actor_rollout_ref.actor.megatron
+        assert mg.use_mbridge is True and mg.vanilla_mbridge is False
+        assert mg.tensor_model_parallel_size == 1 and mg.pipeline_model_parallel_size == 1
+        assert mg.override_transformer_config.recompute_granularity == "full"
+        assert mg.override_transformer_config.recompute_method == "uniform"
+        assert mg.override_transformer_config.recompute_num_layers == 1
+        assert model.lora["rank"] == 16 and model.lora["merge"] is False
+        assert "language_model.decoder.layers.*.self_attention.in_proj" in model.lora["target_modules"]
+        assert cfg.actor_rollout_ref.ref.megatron.use_mbridge is True
+    else:
+        assert cfg.actor_rollout_ref.actor.fsdp_config.fsdp_size == 1
     if recipe == "rollout_only":
         assert cfg.trainer.rollout_only is True and cfg.trainer.rollout_only_steps == 1
         assert cfg.actor_rollout_ref.rollout.calculate_log_probs is False
@@ -130,7 +151,9 @@ def test_recipe_dry_run_composes(recipe, policy, tmp_path):
 
 @pytest.mark.parametrize("model_key", MODELS)
 def test_every_model_overlay_composes_with_the_driver(model_key, tmp_path):
-    overrides, _ = dry_run(RECIPES["full_step"], tmp_path, {"POLICY": "tail_t8", "MODEL_KEY": model_key})
+    # Phi-4-mini and Gemma4 have no Megatron-Bridge mapping on this branch; they compose only under fsdp2.
+    trainer = "megatron" if model_key.startswith("qwen3_5") else "fsdp2"
+    overrides, _ = dry_run(RECIPES["full_step"], tmp_path, {"POLICY": "tail_t8", "MODEL_KEY": model_key, "TRAINER": trainer})
     cfg = compose_overrides(overrides)
     rollout = omega_conf_to_dataclass(cfg.actor_rollout_ref.rollout)
     model = omega_conf_to_dataclass(cfg.actor_rollout_ref.model)
@@ -251,6 +274,7 @@ def test_dry_run_matches_archived_run_config(tmp_path):
     env = {
         "POLICY": "tail_t8",
         "MODEL_KEY": "qwen3_5_4b",
+        "TRAINER": archived["backend"],  # the archived extensibility cell was an FSDP2 run
         "TRAIN_BATCH_SIZE": str(archived["train_batch_size"]),
         "ROLLOUT_N": str(archived["rollout_n"]),
         "RESPONSE_CAP": str(archived["response_cap"]),

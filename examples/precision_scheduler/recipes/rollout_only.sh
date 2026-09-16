@@ -19,5 +19,5 @@ export TOTAL_STEPS="${TOTAL_STEPS:-1}"
 export CALCULATE_LOG_PROBS=False
 export SAVE_FREQ=-1
 export PROJECT_NAME="${PROJECT_NAME:-rollout_only}"
-exec bash "${here}/../run_fsdp_fullstep.sh" \
+exec bash "${here}/../run_fullstep.sh" \
   trainer.rollout_only=true "trainer.rollout_only_steps=${TOTAL_STEPS}" "$@"

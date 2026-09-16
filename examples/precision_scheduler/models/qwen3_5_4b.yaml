@@ -30,6 +30,19 @@ actor_rollout_ref:
       - in_proj_b
       - in_proj_a
       - out_proj
+    # Megatron-Bridge PEFT (TRAINER=megatron, the reporting trainer): the same twelve HF projections
+    # named as mcore modules; build_peft_config_for_vllm maps them back for the vLLM adapter.
+    lora:
+      rank: 16
+      alpha: 16
+      merge: false
+      target_modules:
+        - language_model.decoder.layers.*.self_attention.linear_qkv
+        - language_model.decoder.layers.*.self_attention.linear_proj
+        - language_model.decoder.layers.*.self_attention.in_proj
+        - language_model.decoder.layers.*.self_attention.out_proj
+        - language_model.decoder.layers.*.mlp.linear_fc1
+        - language_model.decoder.layers.*.mlp.linear_fc2
   rollout:
     load_format: dummy
     engine_kwargs:

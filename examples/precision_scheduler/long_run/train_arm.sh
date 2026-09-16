@@ -25,14 +25,19 @@ max_attempts="${MAX_ATTEMPTS:-3}"
 overrides=("trainer.rollout_only=false" "trainer.resume_mode=auto" "actor_rollout_ref.actor.old_log_prob_calculate_entropy=false")
 if [[ -n "${INITIAL_LORA_ADAPTER_PATH:-}" ]]; then
   [[ -f "${INITIAL_LORA_ADAPTER_PATH}/adapter_config.json" ]] || { echo "not a PEFT adapter dir: ${INITIAL_LORA_ADAPTER_PATH}" >&2; exit 2; }
-  overrides+=("actor_rollout_ref.model.lora_adapter_path=${INITIAL_LORA_ADAPTER_PATH}")
+  # FSDP reads model.lora_adapter_path, Megatron-Bridge PEFT reads model.lora.adapter_path.
+  if [[ "${TRAINER:-megatron}" == "megatron" ]]; then
+    overrides+=("actor_rollout_ref.model.lora.adapter_path=${INITIAL_LORA_ADAPTER_PATH}")
+  else
+    overrides+=("actor_rollout_ref.model.lora_adapter_path=${INITIAL_LORA_ADAPTER_PATH}")
+  fi
 fi
 if [[ "${SAVE_INITIAL_CHECKPOINT:-0}" == "1" ]]; then overrides+=("trainer.save_initial_checkpoint=true"); fi
 if [[ "${EXIT_AFTER_INITIAL_CHECKPOINT:-0}" == "1" ]]; then overrides+=("trainer.exit_after_initial_checkpoint=true"); fi
 overrides+=("$@")
 
 if [[ "${DRY_RUN:-0}" == "1" ]]; then
-  exec bash "${here}/../run_fsdp_fullstep.sh" "${overrides[@]}"
+  exec bash "${here}/../run_fullstep.sh" "${overrides[@]}"
 fi
 mkdir -p "${RUN_DIR}"
 for attempt in $(seq 1 "${max_attempts}"); do
@@ -43,7 +48,7 @@ for attempt in $(seq 1 "${max_attempts}"); do
   printf 'START run=%s policy=%s steps=%s attempt=%s resume=%s %s\n' "${RUN_DIR}" "${POLICY:-bf16}" "${TOTAL_STEPS}" \
     "${attempt}" "${latest:-none}" "$(date -u +%FT%TZ)" | tee -a "${RUN_DIR}/events.log"
   rc=0
-  ALLOW_RESUME=1 bash "${here}/../run_fsdp_fullstep.sh" "${overrides[@]}" || rc=$?
+  ALLOW_RESUME=1 bash "${here}/../run_fullstep.sh" "${overrides[@]}" || rc=$?
   printf 'END rc=%s attempt=%s %s\n' "${rc}" "${attempt}" "$(date -u +%FT%TZ)" | tee -a "${RUN_DIR}/events.log"
   if [[ ${rc} -eq 0 ]]; then exit 0; fi
   if [[ ${rc} -eq 2 || ${rc} -eq 124 ]]; then exit "${rc}"; fi   # usage error / timeout: do not retry

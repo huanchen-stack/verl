@@ -14,7 +14,8 @@ exports and what the decision-13 launcher `run_gpu.sh` sets (`CUDA_VISIBLE_DEVIC
 | Path | Purpose |
 |---|---|
 | `common.sh` | shared helpers: `ps_resolve_policy` (POLICY name -> `rollout.precision_scheduler.*` overrides), `ps_common_overrides` (model overlay, data, reward, tracing, host isolation, run-dir layout), `ps_init_run_dir` (STARTED / COMPLETE / FAILED markers, `run_config.json`), `ps_launch` (DRY_RUN or `python -m verl.trainer.main_ppo`) |
-| `run_fsdp_fullstep.sh` | the FSDP2 (TP=1, DP=1) GRPO driver; every training knob is a shell variable with the archived default ; **not the reporting trainer** (decision 10 reversed 2026-09-16: Megatron TP1) |
+| `run_fullstep.sh` | the single-GPU (TP=1, DP=1) GRPO driver; `TRAINER=megatron` (default, the reporting trainer: Megatron-Core via Megatron-Bridge, LoRA through `model.lora.*`) or `TRAINER=fsdp2` (smoke tests and ablations only); every training knob is a shell variable with the archived default |
+| `run_megatron_fullstep.sh`, `run_fsdp_fullstep.sh` | two-line wrappers that pin `TRAINER` |
 | `recipes/rollout_only.sh` | generation + reward only, N steps (`trainer.rollout_only=true`) |
 | `recipes/full_step.sh` | full GRPO steps (rollout, old log-prob, ref, update, weight sync) |
 | `recipes/continuous_ema.sh` | online EMA policy: C6 `watch-ema` sidecar + runner with `reload_policy_each_rollout=true`, fail-closed |
@@ -109,11 +110,15 @@ POLICY_PATH=$RUN_DIR/policy.json BF_TRACE=... W4_TRACE=... HEATMAP=... TOTAL_STE
 DRY_RUN=1 POLICY=fixed_k8000 bash examples/precision_scheduler/recipes/full_step.sh trainer.total_training_steps=5
 ```
 
-Knobs of `run_fsdp_fullstep.sh` (shell variables, archived defaults): `TRAIN_BATCH_SIZE=16 ROLLOUT_N=4
+Knobs of `run_fullstep.sh` (shell variables, archived defaults): `TRAINER=megatron TRAIN_BATCH_SIZE=16 ROLLOUT_N=4
 RESPONSE_CAP=16384 PROMPT_CAP=2048 MAX_MODEL_LEN=cap+prompt PPO_MAX_TOKEN_LEN=18432 GMEM=0.50 TOTAL_STEPS=4
 SAVE_FREQ=-1 ACTOR_LR=1e-6 USE_KL_LOSS=True ENFORCE_EAGER=false WEIGHT_BUCKET_MB=4096 ROLLOUT_SEED=42
 MAX_CKPT_TO_KEEP=2 USE_FUSED_KERNELS=true USE_DYNAMIC_BSZ=true GRADIENT_CHECKPOINTING=true
-ACTOR_PARAM_OFFLOAD=false CALCULATE_LOG_PROBS=True PORT_BASE=47000+300*gpu RUN_TIMEOUT=12h`.
+ACTOR_PARAM_OFFLOAD=false CALCULATE_LOG_PROBS=True PORT_BASE=47000+300*gpu RUN_TIMEOUT=12h`; Megatron only:
+`RECOMPUTE_GRANULARITY=full RECOMPUTE_METHOD=uniform RECOMPUTE_NUM_LAYERS=1 ATTENTION_BACKEND=auto
+ACTOR_GRAD_OFFLOAD=false ACTOR_OPTIMIZER_OFFLOAD=false`. The Qwen3.5 overlays carry the Megatron LoRA block
+(`model.lora.target_modules` in mcore names); Phi-4-mini and Gemma4 have no Megatron-Bridge mapping and run only
+under `TRAINER=fsdp2`.
 `rollout_only.sh` sets `INITIAL_BATCH=64` (-> `TRAIN_BATCH_SIZE=INITIAL_BATCH/ROLLOUT_N`), cap 24576,
 `CALCULATE_LOG_PROBS=False`; `full_step.sh` sets 30 steps and cap 24576.
 
