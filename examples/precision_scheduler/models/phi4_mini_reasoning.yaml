@@ -9,7 +9,8 @@
 # quantized replication").  Phi-4-mini-flash-reasoning (Phi4FlashForCausalLM)
 # is NOT supported by vLLM V1 and has no W4 pair.
 #
-# There is no Phi-specific code in either repo.  Two things differ from the
+# Megatron support comes from verl/models/mcore/phi3_bridge.py (Megatron-Bridge 0.5 ships no Phi3
+# bridge; LongRoPE and the fused projections are handled there).  Two things differ from the
 # Qwen overlays:
 #   * Phi3 fuses the projections, so LoRA targets are the fused names
 #     qkv_proj / gate_up_proj / o_proj / down_proj.
@@ -34,6 +35,17 @@ actor_rollout_ref:
       - o_proj
       - gate_up_proj
       - down_proj
+    # Megatron-Bridge PEFT (TRAINER=megatron): verl/models/mcore/phi3_bridge.py loads the fused HF
+    # checkpoint into a plain GPTModel and exports the adapter as one lora_A/lora_B per fused module.
+    lora:
+      rank: 16
+      alpha: 16
+      merge: false
+      target_modules:
+        - decoder.layers.*.self_attention.linear_qkv
+        - decoder.layers.*.self_attention.linear_proj
+        - decoder.layers.*.mlp.linear_fc1
+        - decoder.layers.*.mlp.linear_fc2
   rollout:
     load_format: auto
     engine_kwargs:

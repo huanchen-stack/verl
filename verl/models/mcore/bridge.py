@@ -21,6 +21,9 @@ except ImportError:
     print("Megatron-Bridge package not found. Please install Megatron-Bridge with `pip install megatron-bridge`")
     raise
 
+# Architectures Megatron-Bridge does not ship; importing registers them with AutoBridge.
+import verl.models.mcore.phi3_bridge  # noqa: E402,F401
+
 __all__ = [
     "AutoBridge",
     "LinearForLastLayer",

@@ -56,6 +56,12 @@ MEGATRON_TO_HF_MODULES_BY_MODEL_TYPE = {
 }
 for _alias in ("qwen3_5_moe", "qwen3_5_text", "qwen3_5_moe_text"):
     MEGATRON_TO_HF_MODULES_BY_MODEL_TYPE[_alias] = MEGATRON_TO_HF_MODULES_BY_MODEL_TYPE["qwen3_5"]
+# Phi3: the HF modules are the fused qkv_proj / gate_up_proj (vLLM's Phi3ForCausalLM keeps them fused, one
+# LoRA A/B per module); verl/models/mcore/phi3_bridge.py exports the adapter in that layout.
+MEGATRON_TO_HF_MODULES_BY_MODEL_TYPE["phi3"] = {
+    "linear_qkv": ["qkv_proj"],
+    "linear_fc1": ["gate_up_proj"],
+}
 
 # Modules with stacked parameters that need .base_layer suffix in vLLM
 STACKED_PARAMS = [
@@ -97,6 +103,9 @@ STACKED_PARAMS_BY_MODEL_TYPE = {
     ],
     # Nemotron-H Mamba mixers keep the HF names in_proj / out_proj verbatim.
     "nemotron_h": [".in_proj.weight", ".out_proj.weight"],
+    # Phi3 (vLLM Phi3ForCausalLM inherits LlamaForCausalLM): fused qkv_proj / gate_up_proj plus the
+    # LoRA-wrapped tied embedding, all under base_layer.
+    "phi3": [".qkv_proj.weight", ".gate_up_proj.weight", ".embed_tokens.weight"],
 }
 for _alias in ("qwen3_5_moe", "qwen3_5_text", "qwen3_5_moe_text"):
     STACKED_PARAMS_BY_MODEL_TYPE[_alias] = STACKED_PARAMS_BY_MODEL_TYPE["qwen3_5"]

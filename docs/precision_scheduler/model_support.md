@@ -24,9 +24,39 @@ statements.
 Megatron TP1 (DP=1) is the training driver for every RL-step experiment and
 every model, first-class and extensibility tier alike (decision 10, reversed
 2026-09-16). FSDP2 is not a fallback for models that lack a Megatron-Bridge
-mapping: such a model (Phi3ForCausalLM as of 2026-09-16) gets a bridge under
-C9 before it is run. A Megatron e2e one-step GRPO test is required before any
-full-step number is reported.
+mapping: such a model gets a bridge under C9 before it is run.
+
+### Phi3 Megatron-Bridge — `verl/models/mcore/phi3_bridge.py` (2026-09-17)
+
+Megatron-Bridge 0.5 ships no `Phi3ForCausalLM` bridge. `Phi3Bridge` (registered
+on import of `verl.models.mcore.bridge`) maps the Llama-shaped model onto a
+plain `GPTModel` with three Phi3 specifics: the fused HF `qkv_proj` /
+`gate_up_proj` tensors (`ConcatenatedQKVMapping` and a new
+`ConcatenatedGatedMLPMapping`; the PEFT exporter's name heuristics are
+overridden so `lora_B` comes out in HF `[q;k;v]` / `[gate;up]` row order),
+`partial_rotary_factor` (kept as `rotary_percent`; the Llama bridge would force
+1.0), and LongRoPE, which Megatron-Core lacks: a pre-wrap hook divides
+`inv_freq` by the HF `short_factor`/`long_factor` list and the attention factor
+`sqrt(1 + ln(max_pos/orig_max_pos)/ln(orig_max_pos))` is routed through
+Megatron-Core's YaRN concentration-factor path (`yarn_rotary_scaling_factor =
+e^10`, `yarn_mscale = factor - 1`, `yarn_mscale_all_dim = 0`), with
+`apply_rope_fusion` off because TE's fused thd RoPE drops `mscale`.
+`verl/utils/megatron_peft_utils.py` maps `linear_qkv -> qkv_proj`,
+`linear_fc1 -> gate_up_proj` for `model_type == "phi3"` and adds the fused
+names plus the tied `embed_tokens` to the `base_layer` list.
+
+Evidence (`tests/models/test_phi3_megatron_bridge_on_gpu.py`, Phi-4-mini-reasoning,
+one A100): logits argmax agreement 1.000 on 41/401/661-token prompts, KL to
+fp32 HF 7.3e-3 / 5.6e-4 / 3.9e-4 versus bf16 HF's own 7.6e-3 / 8.1e-4 / 4.1e-4
+(plain RoPE without the LongRoPE shim: KL 2.07 / 0.13 / 0.06); every exported
+weight bit-equal to the checkpoint; adapter export names `qkv_proj`,
+`gate_up_proj`, `o_proj`, `down_proj` with per-layer HF-base + B@A matching
+the Megatron LoRA layer (rel 4-5e-3 fused, exact elsewhere). Two-step GRPO
+through `recipes/full_step.sh` (B16, cap 1024): BF16 rollout/actor Pearson
+0.995, `rollout_corr/kl` 0.002; uniform W4 Pearson 0.70, KL 0.29-0.39 (the
+community llm-compressor INT4 shadow, flagged screening-only in the overlay).
+Merged-adapter export (`model.lora.merge=true`) is not implemented for the
+fused modules and raises.
 
 ## Mechanisms
 

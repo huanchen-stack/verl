@@ -151,8 +151,8 @@ def test_recipe_dry_run_composes(recipe, policy, trainer, tmp_path):
 
 @pytest.mark.parametrize("model_key", MODELS)
 def test_every_model_overlay_composes_with_the_driver(model_key, tmp_path):
-    # Phi-4-mini and Gemma4 have no Megatron-Bridge mapping on this branch; they compose only under fsdp2.
-    trainer = "megatron" if model_key.startswith("qwen3_5") else "fsdp2"
+    # Gemma4 has no Megatron-Bridge mapping on this branch and composes only under fsdp2 (CPU test only).
+    trainer = "fsdp2" if model_key == "gemma4_e2b" else "megatron"
     overrides, _ = dry_run(RECIPES["full_step"], tmp_path, {"POLICY": "tail_t8", "MODEL_KEY": model_key, "TRAINER": trainer})
     cfg = compose_overrides(overrides)
     rollout = omega_conf_to_dataclass(cfg.actor_rollout_ref.rollout)
