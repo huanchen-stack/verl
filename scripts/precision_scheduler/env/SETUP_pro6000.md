@@ -81,17 +81,15 @@ mamba create -n cuda130 -c nvidia -c conda-forge cuda-toolkit=13.0.3   # if the 
 
 ## Precision-scheduler worktrees
 
-The environment above is the shared venv. The precision-scheduler work itself
-lives in two worktrees on the `-pro6000-adapt` branches, reached by putting both
-roots first on `PYTHONPATH` (which beats the editable install in site-packages,
-as `ENVIRONMENT.md` describes for the original host):
+Exactly four working copies, one per repo per branch:
 
-| worktree | branch | purpose |
+| directory | branch | purpose |
 |---|---|---|
-| `~/vllm-ps` | `rollout-precision-scheduler-clean-pro6000-adapt` | the runtime being changed |
-| `~/verl-ps` | `rollout-precision-scheduler-clean-pro6000-adapt` | harness, policy toolkit, docs |
-| `~/vllm-ps-run` | detached | pinned copy for long measurement runs |
+| `~/vllm`, `~/verl` | `main` | untouched |
+| `~/vllm-ps`, `~/verl-ps` | `rollout-precision-scheduler-clean` | the only place work happens |
 
+Reach them by putting both roots first on `PYTHONPATH` (which beats the editable
+install in site-packages, as `ENVIRONMENT.md` describes for the original host).
 A fresh vLLM worktree needs the gitignored precompiled payload before it will
 import:
 
@@ -100,9 +98,9 @@ bash ~/verl-ps/scripts/precision_scheduler/env/populate_vllm_worktree.sh ~/vllm 
 python ~/verl-ps/scripts/precision_scheduler/env/check_env.py --write-version-file ~/vllm-ps
 ```
 
-`~/vllm-ps-run` exists so a multi-hour TPOT grid cannot pick up edits made to
-`~/vllm-ps` while it runs; each precision row is a fresh child process that
-re-imports vLLM, so editing the tree under a live run is not safe.
+Long GPU runs read from `~/vllm-ps` directly. Do not edit that tree while a run
+is in flight: each precision row of the heatmap is a fresh child process that
+re-imports vLLM, so an edit mid-run changes the measurement.
 
 Tests that need checkpoints take `DUAL_PRECISION_HF_HUB`; on this host that is
 `/mnt/home/huanchen/.cache/huggingface/hub`. Without it they skip, since they

@@ -24,6 +24,43 @@ BATCH_SIZES=${BATCH_SIZES:-1,8}
 SEQ_LENS=${SEQ_LENS:-1024,4096,8192,16384}
 PRECISIONS=${PRECISIONS:-bf16,int4,nvfp4}
 
+# Protocol knobs.
+#   STANDALONE=1 : every row is a vanilla engine on its own checkpoint (no LoRA).
+#   STANDALONE=0 : quantized rows run inside the dual-precision runtime against a
+#                  shadow, which is how a real rollout decodes.
+#   FAST_PATH=1  : fused rollout-LoRA path + dual stream, matching ps_resolve_policy
+#                  and the archived launchers. Needs ADAPTER; the cost model that
+#                  prices a scheduled rollout has to be measured on the same kernels
+#                  the rollout will use.
+STANDALONE=${STANDALONE:-1}
+FAST_PATH=${FAST_PATH:-0}
+ADAPTER=${ADAPTER:-}
+
+#   BF16_LAYERS  : layers the dual-precision runtime keeps in BF16 under the shadow. vLLM's
+#                  own default is first:3,last:3, but ps_resolve_policy sets none for every
+#                  RL run, so the cost model must be measured with none too (6 of 32 layers
+#                  left in BF16 understated the W4 speedup on both models on 2026-09-17).
+BF16_LAYERS=${BF16_LAYERS:-none}
+
+EXTRA_ARGS=()
+if [ "$STANDALONE" = 1 ]; then
+    EXTRA_ARGS+=(--standalone-base-precision)
+else
+    export VLLM_DUAL_PRECISION_BF16_LAYERS="$BF16_LAYERS"
+fi
+if [ -n "$ADAPTER" ]; then
+    EXTRA_ARGS+=(--adapter "$ADAPTER" --max-lora-rank "${LORA_RANK:-16}")
+    # Restrict LoRA to the overlay's targets so the embedding is not wrapped;
+    # unrestricted, its vanilla punica path breaks torch.compile.
+    EXTRA_ARGS+=(--lora-target-modules "${LORA_TARGETS:-qkv_proj,o_proj,gate_up_proj,down_proj}")
+fi
+if [ "$FAST_PATH" = 1 ]; then
+    [ -n "$ADAPTER" ] || { echo "FAST_PATH=1 needs ADAPTER (tools/rollout_lora/make_zero_lora.py)" >&2; exit 2; }
+    export ROLLOUT_QLORA=1
+    export VLLM_LORA_ENABLE_DUAL_STREAM=1
+    export VLLM_ROLLOUT_LORA_FUSE_PACKED=${VLLM_ROLLOUT_LORA_FUSE_PACKED:-1}
+fi
+
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
 export PYTHONPATH="$VLLM_PS:$VERL_PS${PYTHONPATH:+:$PYTHONPATH}"
 export PYTHONUNBUFFERED=1
@@ -35,7 +72,7 @@ python "$VLLM_PS/tools/precision_scheduler/tpot_heatmap.py" \
     --model "$BF16_MODEL" \
     --int4-model "$INT4_MODEL" \
     --nvfp4-model "$NVFP4_MODEL" \
-    --standalone-base-precision \
+    "${EXTRA_ARGS[@]}" \
     --precisions "$PRECISIONS" \
     --batch-sizes "$BATCH_SIZES" \
     --seq-lens "$SEQ_LENS" \
