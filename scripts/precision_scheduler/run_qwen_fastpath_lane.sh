@@ -4,7 +4,8 @@
 #
 #   source ~/rl_env.sh && bash run_qwen_fastpath_lane.sh calib     # stage 2: 3 x 128-request rollouts
 #   source ~/rl_env.sh && bash run_qwen_fastpath_lane.sh ema       # stage 3: EMA w4a16, then EMA nvfp4
-#   source ~/rl_env.sh && bash run_qwen_fastpath_lane.sh all
+#   source ~/rl_env.sh && bash run_qwen_fastpath_lane.sh control   # bf16 on the fast path, 20 steps
+#   source ~/rl_env.sh && bash run_qwen_fastpath_lane.sh all       # calib, ema, then control
 #
 # Stage 1 (the fast-path TPOT heatmap, run_tpot_heatmap_3precision.sh with STANDALONE=0
 # FAST_PATH=1) must already be complete in $HEATMAP_DIR.
@@ -43,8 +44,10 @@ HALT_AT=${HALT_AT:-10}
 export CUDA_VISIBLE_DEVICES="${LANE_GPU:-1}"
 case ",${CUDA_VISIBLE_DEVICES}," in *,0,*) echo "[lane] refusing to run on GPU 0 (reserved)" >&2; exit 2;; esac
 # The port base keeps the torch distributed range clear of anything launched against GPU 0.
-export PS_ALLOW_GPU1=1
 export PORT_BASE=${PORT_BASE:-47600}
+# Trainer is the branch default, Megatron TP1 (decision 10 reversed 2026-09-16). FSDP2 results
+# from this host were deprecated on 2026-09-17; Megatron must be installed before this runs.
+export TRAINER=${TRAINER:-megatron}
 export PYTHONPATH="$VLLM_PS:$VERL_PS${PYTHONPATH:+:$PYTHONPATH}"
 export PYTHONUNBUFFERED=1
 export TOKENIZERS_PARALLELISM=false
@@ -131,10 +134,25 @@ run_ema() {
     done
 }
 
+run_control() {
+    # BF16 policy on the fast path, same shape as the EMA arms. Separates "EMA is faster than
+    # punica bf16" from "the fast path is faster than punica bf16".
+    run_dir="$RUN_ROOT/control_bf16_fastpath"
+    if [ -f "$run_dir/COMPLETE" ]; then echo "[lane] control already COMPLETE"; return 0; fi
+    ray_tmp="$RAY_ROOT/qcf"; rm -rf "$ray_tmp"; mkdir -p "$ray_tmp"
+    echo "[lane] === control bf16 fast path -> $run_dir ==="
+    RUN_DIR="$run_dir" RAY_TMPDIR="$ray_tmp" POLICY=bf16 INT4_MODEL_PATH="" \
+    EXPERIMENT_NAME="control_${MODEL_KEY}_bf16_fastpath" PROJECT_NAME=continuous_ema \
+    TRAIN_BATCH_SIZE=8 ROLLOUT_N=4 RESPONSE_CAP=16384 TOTAL_STEPS="$EMA_STEPS" SAVE_FREQ=-1 \
+    bash "$VERL_PS/examples/precision_scheduler/recipes/full_step.sh" "${fast_path_overrides[@]}"
+    echo "[lane] control exit=$?"
+}
+
 case "$stage" in
-    calib) run_calib ;;
-    ema)   run_ema ;;
-    all)   run_calib && run_ema ;;
+    calib)   run_calib ;;
+    ema)     run_ema ;;
+    control) run_control ;;
+    all)     run_calib && run_ema; ema_rc=$?; run_control; [ "$ema_rc" = 0 ] || exit "$ema_rc" ;;
     *) echo "usage: $0 calib|ema|all" >&2; exit 2 ;;
 esac
 rc=$?
