@@ -27,6 +27,16 @@ Protocol (one watcher process per run directory, started before the rollout with
    next rollout when ``reload_policy_each_rollout`` is enabled.
 4. Append the state to ``online_ema_history.jsonl`` and stop once ``steps`` rollouts completed.
 
+Update rules (``update``):
+
+* ``"weighted"`` (default): each cohort blends into the W4 group that priced its switch (the group
+  with the largest cut at or below the cohort's entry) with weight
+  ``max(n / (prior_weight + n_seen + n), alpha_min)`` -- fast while evidence is thin, then decaying
+  toward ``alpha_min`` (a slow EMA for drift).  A 4-request cohort can no longer flip the table.
+* ``"ema"``: the legacy fixed-``alpha`` blend into the single W4 table.
+
+Hysteresis: ``max_step_tokens`` limits how far each committed frontier may move per revision.
+
 The rollout runner must fail closed when the watcher dies (the policy would otherwise go stale).
 """
 
@@ -39,10 +49,10 @@ from typing import Any
 
 import numpy as np
 
-from .calibration import InitialCalibration
+from .calibration import InitialCalibration, W4Group, w4_group_for
 from .cost_model import PolicyGrid, TpotSource, make_tpot_cache
-from .hazard import HazardTable, components, ema_update
-from .policy_builder import build_policy, write_policy_atomic
+from .hazard import HazardTable, components, ema_update, weighted_update
+from .policy_builder import build_policy, decisions_array, limit_decision_step, write_policy_atomic
 from .traces import cohort_observation, completed_steps, read_cohorts, trace_lengths
 
 DEFAULT_TRACE = "traces/request_lifetimes_replica000_node000.jsonl"
@@ -50,16 +60,27 @@ DEFAULT_COHORTS = "switch_observations.jsonl"
 
 
 def replay_cohorts(
-    base: HazardTable,
+    base: HazardTable | list[W4Group],
     cohorts: list[dict[str, Any]],
     finishes: dict[str, int],
     grid: PolicyGrid,
     alpha: float,
     *,
     max_rollout_index: int | None = None,
-) -> tuple[HazardTable, list[dict[str, Any]]]:
-    """Re-apply switch cohorts (in file order) to ``base``; returns the table and a processing log."""
-    table = base
+    update: str = "ema",
+    prior_weight: float = 32.0,
+    alpha_min: float = 0.05,
+) -> tuple[HazardTable | list[W4Group], list[dict[str, Any]]]:
+    """Re-apply switch cohorts (in file order) to ``base``; returns the updated table(s) and a processing log.
+
+    ``base`` may be one W4 table (legacy) or the calibration's W4 groups; with groups each cohort is
+    routed to the group whose cut is the largest at or below the cohort's median entry frontier.
+    ``update="weighted"`` uses :func:`weighted_update` with per-group online request counts,
+    ``"ema"`` the fixed-``alpha`` blend.
+    """
+    grouped = not isinstance(base, HazardTable)
+    groups: list[W4Group] = [W4Group(g.cut, g.table, g.requests) for g in base] if grouped else [W4Group(0, base, 0)]
+    seen = [0] * len(groups)
     processed = []
     for cohort in cohorts:
         index = cohort.get("rollout_index")
@@ -69,7 +90,19 @@ def replay_cohorts(
         if observation is None:
             continue
         entries, finals, skipped = observation
-        table = ema_update(table, components(entries, finals, grid), alpha)
+        entry = int(np.median(entries))
+        gi = groups.index(w4_group_for(groups, entry)) if grouped else 0
+        new = components(entries, finals, grid)
+        if update == "weighted":
+            table, weight = weighted_update(
+                groups[gi].table, new, int(len(entries)), seen[gi], prior_weight=prior_weight, alpha_min=alpha_min
+            )
+        elif update == "ema":
+            table, weight = ema_update(groups[gi].table, new, alpha), float(alpha)
+        else:
+            raise ValueError(f"unknown update rule {update!r}")
+        groups[gi] = W4Group(groups[gi].cut, table, groups[gi].requests)
+        seen[gi] += int(len(entries))
         processed.append(
             {
                 "rollout_index": index,
@@ -78,9 +111,12 @@ def replay_cohorts(
                 "entry_tokens_mean": float(np.mean(entries)),
                 "final_tokens_mean": float(np.mean(finals)),
                 "cap_requests": int(np.sum(finals >= grid.cap)),
+                "group_cut": int(groups[gi].cut),
+                "weight": float(weight),
+                "group_seen": int(seen[gi]),
             }
         )
-    return table, processed
+    return (groups if grouped else groups[0].table), processed
 
 
 class OnlineEmaWatcher:
@@ -100,6 +136,10 @@ class OnlineEmaWatcher:
         cohort_name: str = DEFAULT_COHORTS,
         gate_cohorts_by_completed_steps: bool = True,
         description: str | None = None,
+        update: str = "weighted",
+        prior_weight: float = 32.0,
+        alpha_min: float = 0.05,
+        max_step_tokens: int = 2000,
     ) -> None:
         self.run_dir = Path(run_dir)
         self.policy_path = Path(policy_path)
@@ -119,18 +159,26 @@ class OnlineEmaWatcher:
         self._tpot = tpot
         self.last_revision = -1
         self.last_state: dict[str, Any] | None = None
+        self.update = update
+        self.prior_weight = float(prior_weight)
+        self.alpha_min = float(alpha_min)
+        self.max_step_tokens = int(max_step_tokens)
+        self._previous_decisions: np.ndarray | None = None
 
     def observe(self) -> tuple[int, HazardTable, list[dict[str, Any]]]:
         """Completed steps, the EMA-updated W4 table and the cohort log, without writing anything."""
         starts, finishes = trace_lengths(self.trace_path) if self.trace_path.exists() else ([], {})
         complete = completed_steps(starts, finishes, self.grid.batch)
         table, processed = replay_cohorts(
-            self.calibration.w4,
+            self.calibration.w4_groups,
             read_cohorts(self.cohort_path),
             finishes,
             self.grid,
             self.alpha,
             max_rollout_index=complete if self.gate else None,
+            update=self.update,
+            prior_weight=self.prior_weight,
+            alpha_min=self.alpha_min,
         )
         return complete, table, processed
 
@@ -150,10 +198,23 @@ class OnlineEmaWatcher:
             self.alpha,
             description=self.description,
             cache=self._cache,
-            calibration_kind=str(self.calibration.metadata.get("kind", "unknown")) + " plus online delayed-entry EMA",
-            extra_calibration={"base_source": self.calibration.metadata, "updates": len(processed)},
+            calibration_kind=str(self.calibration.metadata.get("kind", "unknown"))
+            + f" plus online delayed-entry {self.update} update",
+            extra_calibration={
+                "base_source": self.calibration.metadata,
+                "updates": len(processed),
+                "update_rule": self.update,
+                "prior_weight": self.prior_weight,
+                "alpha_min": self.alpha_min,
+                "max_step_tokens": self.max_step_tokens,
+                "w4_groups": [{"cut": g.cut, "requests": g.requests} for g in self.calibration.w4_groups],
+            },
             w4_token_penalty=self.w4_token_penalty,
         )
+        decisions = decisions_array(policy)
+        limited = limit_decision_step(self._previous_decisions, decisions, self.max_step_tokens)
+        policy["lookup_table"]["committed_frontiers"] = limited.reshape(-1).tolist()
+        self._previous_decisions = limited
         write_policy_atomic(self.policy_path, policy)
         state = {
             "completed_steps": complete,

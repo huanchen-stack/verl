@@ -99,6 +99,31 @@ def ema_update(old: HazardTable, new: HazardTable, alpha: float) -> HazardTable:
     return result
 
 
+def weighted_update(
+    old: HazardTable,
+    new: HazardTable,
+    n_new: int,
+    n_seen: int,
+    *,
+    prior_weight: float,
+    alpha_min: float = 0.0,
+) -> tuple[HazardTable, float]:
+    """Count-weighted blend: ``w = max(n_new / (prior_weight + n_seen + n_new), alpha_min)`` on observed bins.
+
+    ``n_seen`` counts the online requests already blended into ``old`` (the calibration itself is
+    worth ``prior_weight`` requests). The weight therefore starts near ``n_new / prior_weight`` (fast
+    learning while evidence is thin) and decays toward ``alpha_min`` (a slow EMA that tracks drift);
+    a 4-request cohort after 90 online requests moves a bin by ~3 %, not by a fixed 20 %.
+    Returns the blended table and the weight used.
+    """
+    if n_new <= 0:
+        return old.copy(), 0.0
+    if prior_weight < 0 or n_seen < 0 or not 0.0 <= alpha_min <= 1.0:
+        raise ValueError("prior_weight and n_seen must be >= 0 and alpha_min in [0, 1]")
+    weight = max(float(n_new) / float(prior_weight + n_seen + n_new), float(alpha_min))
+    return ema_update(old, new, min(weight, 1.0)), min(weight, 1.0)
+
+
 def survival(table: HazardTable, start_index: int) -> np.ndarray:
     """P(alive at the *start* of each bin from ``start_index``) for a request alive at that frontier.
 

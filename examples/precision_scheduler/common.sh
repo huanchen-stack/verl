@@ -36,6 +36,18 @@ PS_PYTHON="${PYTHON_BIN:-python}"
 
 ps_die() { echo "$(basename "${BASH_SOURCE[1]:-recipe}"): $*" >&2; exit 2; }
 
+# The chat-template kwargs the model overlay applies to prompts (data.apply_chat_template_kwargs), as JSON,
+# so a standalone engine (recipes/calibrate_tail_w4.sh) rebuilds exactly the prompt ids the rollout used.
+ps_chat_template_kwargs() {
+  local overlay="${PS_MODELS_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/models}/$1.yaml"
+  [[ -r "${overlay}" ]] || { echo '{}'; return; }
+  "${PS_PYTHON:-python}" - "${overlay}" <<'PY'
+import json, sys, yaml
+cfg = yaml.safe_load(open(sys.argv[1])) or {}
+print(json.dumps((cfg.get("data") or {}).get("apply_chat_template_kwargs") or {}))
+PY
+}
+
 ps_first_gpu() {
   local first="${CUDA_VISIBLE_DEVICES:-0}"
   first="${first%%,*}"

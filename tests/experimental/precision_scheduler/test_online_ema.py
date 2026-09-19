@@ -106,7 +106,8 @@ def test_one_revision_step_with_fake_cohort(tmp_path):
     assert policy["calibration"]["policy_revision"] == 1
     assert policy["calibration"]["updates"] == 1
     # the EMA moved the observed bins (entries at 500 -> bins from 500 on) and left bin 250 alone
-    _, table, _ = watcher.observe()
+    _, groups, _ = watcher.observe()
+    table = groups[0].table  # single-group (legacy paired) calibration
     assert table.risk[0] == base_w4.risk[0] and table.event[0] == base_w4.event[0]
     assert not np.array_equal(table.event[1:], base_w4.event[1:])
     assert watcher.poll() is None  # nothing changed

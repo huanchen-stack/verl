@@ -62,15 +62,31 @@ REQUIRED_LOOKUP = (
 REQUIRED_COST_MODEL = ("response_cap", "downstream_seconds_per_token", "switch_overhead_seconds")
 
 
+def _w4_tables_by_frontier(w4: Any, grid: PolicyGrid) -> list[HazardTable]:
+    """Per candidate frontier bin, the W4 table that prices a switch there (one table, or a group per cut)."""
+    from .calibration import W4Group, w4_group_for  # local import: calibration imports hazard/cost_model only
+
+    if isinstance(w4, HazardTable):
+        return [w4] * len(grid.frontiers)
+    groups = list(w4)
+    if not groups or not all(isinstance(g, W4Group) for g in groups):
+        raise TypeError("w4 must be a HazardTable or a list of W4Group")
+    return [w4_group_for(groups, int(f)).table for f in grid.frontiers]
+
+
 def build_decisions(
     bf: HazardTable,
-    w4: HazardTable,
+    w4: Any,
     cache: dict[str, np.ndarray],
     grid: PolicyGrid,
     slope: float,
     w4_token_penalty: float = 0.0,
 ) -> np.ndarray:
     """Dense committed-frontier table ``[frontier, prompt bucket, live]`` (0 = never switch).
+
+    ``w4`` is either one after-switch hazard table (legacy: the uniform-W4 baseline) or a list of
+    :class:`~.calibration.W4Group`; with groups, a candidate switch at ``F`` is priced with the
+    group whose cut is the largest at or below ``F`` (what a request switched there does next).
 
     ``w4_token_penalty`` (seconds per expected INT4-decoded token, default 0) prices the quality
     cost of decoding under the INT4 shadow. It is charged on the W4 segment only, exactly like
@@ -83,6 +99,8 @@ def build_decisions(
     if w4_token_penalty < 0:
         raise ValueError("w4_token_penalty must be >= 0")
     frontiers = grid.frontiers
+    tables = _w4_tables_by_frontier(w4, grid)
+    w4_survivals = [survival(tables[k], k) for k in range(len(frontiers))]
     decisions = np.zeros(grid.shape, dtype=np.int64)
     w4_slope = slope + w4_token_penalty
     for fi in range(len(frontiers)):
@@ -94,7 +112,7 @@ def build_decisions(
             prefix_bins = future_fi - fi
             prefix = trajectory_cost_grid(cache, grid, "bf16", fi, bf_alive[:prefix_bins], slope)
             reach = float(bf_alive[prefix_bins])
-            w4_alive = survival(w4, future_fi) * reach
+            w4_alive = w4_survivals[future_fi] * reach
             candidate = prefix + trajectory_cost_grid(cache, grid, "w4", future_fi, w4_alive, w4_slope)
             improve = candidate < best_cost
             best_cost[improve] = candidate[improve]
@@ -102,6 +120,21 @@ def build_decisions(
         eligible = best_cost < stay
         decisions[fi][eligible] = best_frontier[eligible]
     return decisions
+
+
+def limit_decision_step(previous: np.ndarray | None, new: np.ndarray, max_step_tokens: int) -> np.ndarray:
+    """Hysteresis: move each committed frontier at most ``max_step_tokens`` toward the new value per revision.
+
+    Cells that were or become ``0`` (never switch) pass through unchanged; ``max_step_tokens <= 0``
+    disables the limit.
+    """
+    if previous is None or max_step_tokens <= 0 or previous.shape != new.shape:
+        return new
+    out = new.copy()
+    both = (previous > 0) & (new > 0)
+    delta = np.clip(new - previous, -max_step_tokens, max_step_tokens)
+    out[both] = previous[both] + delta[both]
+    return out
 
 
 def policy_from_decisions(
@@ -159,7 +192,7 @@ def policy_from_decisions(
 
 def build_policy(
     bf: HazardTable,
-    w4: HazardTable,
+    w4: Any,
     tpot: TpotSource,
     grid: PolicyGrid,
     slope: float,

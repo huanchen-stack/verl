@@ -73,6 +73,24 @@ def trace_lengths(
     return starts, finishes
 
 
+def continuation_lengths(path: Path, *, cap: int | None = None) -> list[tuple[int, int]]:
+    """``(cut_frontier, final_length)`` per finished request of a tail-W4 continuation trace.
+
+    Start rows carry ``cut_frontier`` (BF16 prefix length in generated tokens); the finish row's
+    ``generation_tokens`` counts only the W4 continuation, so the final length is their sum.
+    """
+    cuts: dict[str, int] = {}
+    out: list[tuple[int, int]] = []
+    for item in read_jsonl(path):
+        rid = str(item.get("request_id", ""))
+        if item.get("event") == "start" and "cut_frontier" in item:
+            cuts[rid] = int(item["cut_frontier"])
+        elif item.get("event") == "finish" and rid in cuts and "generation_tokens" in item:
+            final = cuts[rid] + int(item["generation_tokens"])
+            out.append((cuts[rid], final if cap is None else min(final, cap)))
+    return out
+
+
 def final_lengths(starts: list[dict[str, Any]], finishes: dict[str, int]) -> np.ndarray:
     return np.asarray([finishes[str(row["request_id"])] for row in starts], dtype=np.int64)
 

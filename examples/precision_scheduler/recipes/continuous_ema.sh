@@ -10,7 +10,7 @@
 # the runner is killed and the recipe exits 1 (the rollout must never continue on a stale policy).
 #
 # Usage:  RUN_DIR=... MODEL_KEY=... INITIAL_BATCH=64 RESPONSE_CAP=24576 TOTAL_STEPS=30 \
-#           BF_TRACE=<bf16 baseline trace> W4_TRACE=<w4 baseline trace> HEATMAP=<heatmap.json> \
+#           BF_TRACE=<bf16 baseline trace> W4_CONT_TRACE=<tail-W4 continuation trace> [W4_TRACE=<w4 baseline>] HEATMAP=<heatmap.json> \
 #           [DOWNSTREAM_SLOPE=0] [EMA_ALPHA=0.2] [RUNNER=rollout_only|full_step] recipes/continuous_ema.sh [overrides...]
 # INITIAL_BATCH is the single batch knob: the watcher gets --batch INITIAL_BATCH and both runners get
 # TRAIN_BATCH_SIZE = INITIAL_BATCH / ROLLOUT_N (ROLLOUT_N default 4; INITIAL_BATCH must be divisible). A
@@ -42,12 +42,18 @@ if [[ -n "${WATCHER_CMD:-}" ]]; then
   read -r -a watcher <<<"${WATCHER_CMD}"
 else
   : "${BF_TRACE:?set BF_TRACE (pure-BF16 baseline request-lifetime trace)}"
-  : "${W4_TRACE:?set W4_TRACE (pure-W4 baseline request-lifetime trace)}"
   : "${HEATMAP:?set HEATMAP (profiler heatmap.json)}"
+  # Second calibration path: W4_CONT_TRACE (calibrate_tail_w4.sh: one W4 group per cut) and/or the legacy
+  # W4_TRACE (pure-W4 baseline = the cut-0 group). At least one is required.
+  [[ -n "${W4_CONT_TRACE:-}" || -n "${W4_TRACE:-}" ]] || ps_die "set W4_CONT_TRACE (tail-W4 continuation trace) and/or W4_TRACE (pure-W4 baseline trace)"
   watcher=("${PS_PYTHON}" -m verl.experimental.precision_scheduler.cli watch-ema
     --batch "${batch}" --cap "${cap}" --run-dir "${RUN_DIR}" --policy "${policy_path}" --steps "${steps}"
-    --bf-trace "${BF_TRACE}" --w4-trace "${W4_TRACE}" --heatmap "${HEATMAP}"
-    --alpha "${EMA_ALPHA:-0.2}" --downstream-slope "${DOWNSTREAM_SLOPE:-0}")
+    --bf-trace "${BF_TRACE}" --heatmap "${HEATMAP}"
+    --update "${EMA_UPDATE:-weighted}" --alpha "${EMA_ALPHA:-0.2}" --prior-weight "${EMA_PRIOR_WEIGHT:-32}"
+    --alpha-min "${EMA_ALPHA_MIN:-0.05}" --max-step-tokens "${EMA_MAX_STEP_TOKENS:-2000}"
+    --downstream-slope "${DOWNSTREAM_SLOPE:-0}")
+  [[ -n "${W4_CONT_TRACE:-}" ]] && watcher+=(--w4-cont-trace "${W4_CONT_TRACE}")
+  [[ -n "${W4_TRACE:-}" ]] && watcher+=(--w4-trace "${W4_TRACE}")
   if [[ -n "${WATCHER_EXTRA_ARGS:-}" ]]; then read -r -a extra <<<"${WATCHER_EXTRA_ARGS}"; watcher+=("${extra[@]}"); fi
 fi
 

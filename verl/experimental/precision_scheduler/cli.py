@@ -26,10 +26,11 @@ import sys
 from pathlib import Path
 
 from . import downstream_regression as regression
-from .calibration import paired_traces
+from .calibration import grouped_traces, paired_traces
 from .cost_model import PolicyGrid
 from .online_ema import DEFAULT_COHORTS, DEFAULT_TRACE, OnlineEmaWatcher
 from .policy_builder import build_policy, fixed_frontier_policy, validate_policy, write_policy_atomic
+from .tail_w4_calibration import DEFAULT_QUANTILES
 from .tpot_grid import TpotGrid, legacy_grid_rows, matrix_payload, validate_heatmap, write_legacy_grid_csv
 from .traces import read_jsonl, read_metrics
 
@@ -50,10 +51,20 @@ def _grid(args: argparse.Namespace) -> PolicyGrid:
 
 def _add_calibration_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--bf-trace", type=Path, required=True, help="pure-BF16 baseline request-lifetime trace")
-    parser.add_argument("--w4-trace", type=Path, required=True, help="pure-W4 baseline request-lifetime trace")
+    parser.add_argument("--w4-trace", type=Path, help="pure-W4 baseline request-lifetime trace (legacy second path)")
+    parser.add_argument(
+        "--w4-cont-trace",
+        type=Path,
+        help="tail-W4 continuation trace from calib-tail-w4 (one W4 group per cut); with --w4-trace too, the pure-W4 "
+        "baseline becomes the cut-0 group",
+    )
     parser.add_argument("--calibration-requests", type=int, default=128)
     parser.add_argument("--heatmap", type=Path, required=True, help="profiler heatmap.json")
-    parser.add_argument("--alpha", type=float, default=0.2, help="EMA weight of each new switch cohort")
+    parser.add_argument("--alpha", type=float, default=0.2, help="fixed cohort weight for --update ema")
+    parser.add_argument("--update", choices=("weighted", "ema"), default="weighted", help="online update rule")
+    parser.add_argument("--prior-weight", type=float, default=32.0, help="weighted: calibration worth this many requests")
+    parser.add_argument("--alpha-min", type=float, default=0.05, help="weighted: floor of the cohort weight (drift)")
+    parser.add_argument("--max-step-tokens", type=int, default=2000, help="hysteresis: max frontier move per revision (0 = off)")
     parser.add_argument("--downstream-slope", type=float, default=0.0, help="downstream seconds per sampled token")
     parser.add_argument(
         "--w4-token-penalty",
@@ -62,6 +73,16 @@ def _add_calibration_arguments(parser: argparse.ArgumentParser) -> None:
         help="quality price in seconds per expected INT4-decoded token, charged on the W4 segment (0 = cost only)",
     )
     parser.add_argument("--skip-heatmap-guard", action="store_true", help="accept a heatmap with median speedup ~1.0")
+
+
+def _calibration(args: argparse.Namespace, grid: PolicyGrid):
+    if args.w4_cont_trace is not None:
+        return grouped_traces(
+            args.bf_trace, args.w4_cont_trace, grid, requests=args.calibration_requests, include_uniform_w4=args.w4_trace
+        )
+    if args.w4_trace is None:
+        raise SystemExit("give --w4-trace (legacy pure-W4 baseline) and/or --w4-cont-trace (calib-tail-w4 output)")
+    return paired_traces(args.bf_trace, args.w4_trace, grid, requests=args.calibration_requests)
 
 
 def _load_heatmap(path: Path, skip_guard: bool) -> TpotGrid:
@@ -73,10 +94,10 @@ def _load_heatmap(path: Path, skip_guard: bool) -> TpotGrid:
 
 def cmd_build_policy(args: argparse.Namespace) -> int:
     grid = _grid(args)
-    calibration = paired_traces(args.bf_trace, args.w4_trace, grid, requests=args.calibration_requests)
+    calibration = _calibration(args, grid)
     policy, switch_states = build_policy(
         calibration.bf16,
-        calibration.w4,
+        calibration.w4_groups,
         _load_heatmap(args.heatmap, args.skip_heatmap_guard),
         grid,
         args.downstream_slope,
@@ -101,7 +122,7 @@ def cmd_build_policy(args: argparse.Namespace) -> int:
 
 def cmd_watch_ema(args: argparse.Namespace) -> int:
     grid = _grid(args)
-    calibration = paired_traces(args.bf_trace, args.w4_trace, grid, requests=args.calibration_requests)
+    calibration = _calibration(args, grid)
     watcher = OnlineEmaWatcher(
         run_dir=args.run_dir,
         policy_path=args.policy,
@@ -115,8 +136,57 @@ def cmd_watch_ema(args: argparse.Namespace) -> int:
         trace_name=args.trace_name,
         cohort_name=args.cohort_name,
         gate_cohorts_by_completed_steps=not args.no_cohort_gate,
+        update=args.update,
+        prior_weight=args.prior_weight,
+        alpha_min=args.alpha_min,
+        max_step_tokens=args.max_step_tokens,
     )
     watcher.run(initialize_only=args.initialize_only, poll_interval=args.poll_interval)
+    return 0
+
+
+def cmd_calib_tail_w4(args: argparse.Namespace) -> int:
+    """Plan (and unless --dry-run, run) the tail-W4 continuation calibration."""
+    from . import tail_w4_calibration as tw
+
+    rows = tw.bf16_requests(args.bf_trace, cap=args.cap, limit=args.calibration_requests)
+    lengths = [r["length"] for r in rows]
+    if args.cut_tokens is not None:
+        cuts = tw.cut_frontiers(lengths, tokens=args.cut_tokens, step=args.step, cap=args.cap)
+        quantiles = None
+    else:
+        quantiles = args.cut_quantiles
+        cuts = tw.cut_frontiers(lengths, quantiles=quantiles, step=args.step, cap=args.cap)
+    from transformers import AutoTokenizer
+
+    tokenizer = AutoTokenizer.from_pretrained(args.tokenizer or args.model, trust_remote_code=True)
+    lookup = tw.prompt_ids_from_parquet(args.data, tokenizer, chat_template_kwargs=json.loads(args.chat_template_kwargs))
+    plan = tw.plan_continuations(rows, cuts, cap=args.cap, prompt_ids_for=lookup)
+    payload = tw.manifest(cuts, plan, quantiles=quantiles, cap=args.cap, bf16_requests_count=len(rows))
+    payload.update({"bf16_trace": str(args.bf_trace), "output_trace": str(args.output_trace), "model": args.model, "int4_model": args.int4_model})
+    tw.write_manifest(args.output_trace.parent / "calibration_manifest.json", payload)
+    print(json.dumps(payload, indent=2), flush=True)
+    if args.dry_run:
+        return 0
+    engine = tw.VllmEngine(
+        model=args.model,
+        int4_model=args.int4_model,
+        cap=args.cap,
+        prompt_cap=args.prompt_max,
+        seed=args.seed,
+        gpu_memory_utilization=args.gpu_memory_utilization,
+        max_num_seqs=args.max_num_seqs,
+        lora_adapter=args.lora_adapter,
+        lora_fast_path=not args.no_lora_fast_path,
+        lora_dual_stream=not args.no_lora_dual_stream,
+    )
+    writer = tw.ContinuationTraceWriter(args.output_trace, log_tokens=args.log_tokens)
+    try:
+        results = tw.run_continuations(engine, plan, writer)
+    finally:
+        writer.close()
+    finals = [r.generation_tokens for r in results]
+    print(json.dumps({"continuations": len(results), "mean_continuation_tokens": float(sum(finals) / max(len(finals), 1)), "cap_hits": int(sum(1 for req, r in zip(plan, results) if r.generation_tokens >= req.max_tokens))}), flush=True)
     return 0
 
 
@@ -207,6 +277,32 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--initialize-only", action="store_true", help="write revision 0 and exit")
     p.add_argument("--no-cohort-gate", action="store_true", help="ingest cohorts regardless of completed steps")
     p.set_defaults(func=cmd_watch_ema)
+
+    p = sub.add_parser("calib-tail-w4", help="second calibration path: continue BF16 prefixes under W4 from quantile cuts")
+    p.add_argument("--bf-trace", type=Path, required=True, help="BF16 calibration trace written with token logging")
+    p.add_argument("--output-trace", type=Path, required=True, help="continuation trace to write (manifest goes beside it)")
+    p.add_argument("--calibration-requests", type=int, default=256)
+    p.add_argument("--cap", type=int, required=True, help="response cap (tokens)")
+    p.add_argument("--step", type=int, default=250)
+    p.add_argument("--prompt-max", type=int, default=2048)
+    g = p.add_mutually_exclusive_group()
+    g.add_argument("--cut-quantiles", type=lambda v: [float(x) for x in v.split(",")], default=list(DEFAULT_QUANTILES),
+                   help="population quantiles of the BF16 lengths used as cut frontiers (default 0.667,0.75,0.8,0.9)")
+    g.add_argument("--cut-tokens", type=lambda v: [int(x) for x in v.split(",")], help="explicit cut frontiers; 0 = uniform W4")
+    p.add_argument("--data", type=Path, required=True, help="parquet the BF16 rollout used (prompt messages)")
+    p.add_argument("--model", required=True, help="BF16 model path")
+    p.add_argument("--int4-model", required=True, help="INT4 shadow checkpoint path")
+    p.add_argument("--tokenizer", help="tokenizer path (default: --model)")
+    p.add_argument("--chat-template-kwargs", default="{}", help='JSON, e.g. \'{"enable_thinking": true}\' (must match the rollout)')
+    p.add_argument("--lora-adapter", help="LoRA adapter directory (the zero adapter the runs start from); omit for base model")
+    p.add_argument("--no-lora-fast-path", action="store_true")
+    p.add_argument("--no-lora-dual-stream", action="store_true")
+    p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--gpu-memory-utilization", type=float, default=0.5)
+    p.add_argument("--max-num-seqs", type=int, default=64)
+    p.add_argument("--log-tokens", action="store_true", help="record continuation token ids in the trace")
+    p.add_argument("--dry-run", action="store_true", help="plan and write the manifest only; no engine")
+    p.set_defaults(func=cmd_calib_tail_w4)
 
     p = sub.add_parser("fit-downstream", help="downstream seconds vs tokens regressions")
     p.add_argument("--kind", choices=("metrics", "points", "replay"), default="metrics")
