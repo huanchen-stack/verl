@@ -28,16 +28,17 @@ before the next rollout.
 | Module | Contents |
 |---|---|
 | `cost_model.py` | `PolicyGrid(step=250, cap=16384, batch=32, prompt_step=128, prompt_max=2048)` replaces the STEP/CAP/BATCH/PROMPTS module constants; `make_tpot_cache`, `trajectory_cost`, `trajectory_cost_grid`, `plan_cost`, `switched_plan_cost` (the pseudo code of the C5 card) |
-| `hazard.py` | `HazardTable(risk, event, observed)`, `components(entries, finals, grid)`, `ema_update(old, new, alpha)` on observed bins only, `survival(table, start_index)` at bin start |
+| `hazard.py` | `HazardTable(risk, event, observed)`, `components(entries, finals, grid, events=None)` (delayed entry; `events=False` censors a request at `final`), `ema_update(old, new, alpha)` / `weighted_update(old, new, n_new, n_seen, prior_weight, alpha_min)` on observed bins only, `survival(table, start_index)` at bin start |
 | `tpot_grid.py` | `TpotGrid` (heatmap.json or legacy Gen1 CSV; log2 interpolation with NaN masking), `matrix_payload` from profiler cells, `validate_heatmap` (median-speedup guard), legacy CSV writer |
 | `policy_builder.py` | `build_decisions` (global search), `build_policy`, `fixed_frontier_policy`, `validate_policy`, `lookup`, `decisions_array`, `write_policy_atomic`, `load_policy` |
 | `traces.py` | request-lifetime traces, completed-step counting, EngineCore id suffix resolution, switch-cohort rows, metrics rows |
-| `calibration.py` | initial BF16 / W4 tables from paired baseline traces or explicit final lengths |
+| `calibration.py` | initial BF16 / W4 tables from paired baseline traces (`paired_traces`), from a tail-W4 continuation trace (`grouped_traces`: one `W4Group` per cut, routed by `w4_group_for`), or explicit final lengths |
+| `tail_w4_calibration.py` | `calib-tail-w4`: re-issue every BF16 request alive at each cut (population quantiles, default 2/3, 3/4, 4/5, 9/10) as prompt + its BF16 prefix and decode it under uniform W4 (`plan_continuations`, `ContinuationTraceWriter`, `VllmEngine`) |
 | `downstream_regression.py` | `fit_points`, `fit_split` (120-run), `fit_replay_points` (Megatron replay), `fit_from_metrics` (validation lstsq), `slope_from_metrics` (inline per-model slope) |
-| `online_ema.py` | `OnlineEmaWatcher` (poll, gate, rebuild, atomic write, history) and `replay_cohorts` |
+| `online_ema.py` | `OnlineEmaWatcher` (poll, gate, rebuild, hysteresis, atomic write, history), `replay_cohorts` (W4 groups) and `replay_bf16` (BF16 line, opt-in), both through `weighted_update` |
 | `plots.py` | speedup heatmap, policy switch surface, survival curves, regression scatter |
 | `replay_regression/` | `workloads.py` (token workloads from rollout dumps) and `worker.py` (Megatron `TrainingWorker` timing of old-logprob / ref / update; GPU tool) |
-| `cli.py` | `build-policy`, `watch-ema`, `fit-downstream`, `grid`, `build-fixed-frontier` |
+| `cli.py` | `build-policy`, `watch-ema`, `calib-tail-w4`, `fit-downstream`, `grid`, `build-fixed-frontier` |
 
 ## The search problem (decision 2: global-search formulation only)
 
@@ -85,9 +86,14 @@ inline, so the generator exists for archival compatibility and forced-switch cal
 | `cap` (response cap) | 16384 | `--cap` |
 | `batch` (initial rollout batch = live axis = capture_max_batch = max_switch_live_batch) | 32 | `--batch` |
 | `prompt_step` / `prompt_max` | 128 / 2048 (17 buckets) | `--prompt-step`, `--prompt-max` |
-| `alpha` | 0.2 | `--alpha` (archived sweeps 0.0-0.2 justify 0.2) |
+| `update` | `weighted` | `--update weighted|ema`; `weighted` blends a cohort of `n` requests with `max(n / (prior_weight + n_seen + n), alpha_min)` |
+| `prior_weight` / `alpha_min` | 32 / 0.05 | `--prior-weight` (calibration worth this many requests; the 2026-09-19 runs used 64), `--alpha-min` |
+| `alpha` | 0.2 | `--alpha` (fixed blend for `--update ema`) |
+| `max_step_tokens` (hysteresis) | 2000 | `--max-step-tokens`; each committed frontier moves at most this far per revision |
+| BF16 line online | off | `--bf16-online` (same weighted update, switched requests censored at their entry), `--bf16-prior-weight` (default `prior_weight`), `--bf16-probe-every K` (every K-th rollout never switches: uncensored tail evidence; turns the online line on) -- see the caveat in `online_ema.py` |
 | `downstream_slope` | 0.0 | `--downstream-slope`; fit per model with `fit-downstream` |
-| calibration requests | 128 per baseline | `--calibration-requests` |
+| calibration requests | 128 per baseline | `--calibration-requests` (256 distinct prompts in the b32c24 runs) |
+| W4 calibration | `--w4-trace` (uniform W4 = cut-0 group) and/or `--w4-cont-trace` (tail-W4 continuations, one group per cut) | at least one; `recipes/calibrate_tail_w4.sh` produces both traces |
 | cohort gating | on | `--no-cohort-gate` ingests every resolvable cohort (HEAD watcher behaviour) |
 | `steps` | 30 | watcher stops after that many completed rollouts |
 | heatmap guard | median speedup must differ from 1.0 by >= 2% | `--skip-heatmap-guard` |
@@ -104,9 +110,13 @@ policy before every rollout. The watcher reads
 1. `watch-ema --initialize-only` writes revision 0 from the paired baselines.
 2. The rollout starts; the watcher polls (0.25 s) the trace and the cohort file.
 3. When the number of completed rollouts changes, cohorts with `rollout_index <=
-   completed` are replayed in order onto the base W4 table, the policy is rebuilt and
-   atomically replaced (`policy_revision = completed_steps`), `online_ema_state.json`
-   is replaced and a row is appended to `online_ema_history.jsonl`.
+   completed` are replayed in order onto the W4 group that priced their switch (largest
+   cut at or below the cohort's median entry; with `--bf16-online` every completed
+   rollout is likewise blended into the BF16 line, switched requests censored at their
+   entry), the policy is rebuilt with each candidate frontier priced by its group,
+   the hysteresis limit is applied, and the policy is atomically replaced
+   (`policy_revision = completed_steps`); `online_ema_state.json` is replaced and a row
+   is appended to `online_ema_history.jsonl`.
 4. The rollout runner must abort if the watcher process dies (a stale policy would
    otherwise be reloaded silently); the watcher exits 0 only after `--steps` rollouts.
 

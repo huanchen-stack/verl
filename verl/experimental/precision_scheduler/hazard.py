@@ -64,12 +64,23 @@ class HazardTable:
         )
 
 
-def components(entries: np.ndarray, finals: np.ndarray, grid: PolicyGrid) -> HazardTable:
-    """Empirical risk/event fractions per bin from per-request entry tokens and final lengths."""
+def components(
+    entries: np.ndarray, finals: np.ndarray, grid: PolicyGrid, events: np.ndarray | None = None
+) -> HazardTable:
+    """Empirical risk/event fractions per bin from per-request entry tokens and final lengths.
+
+    A request is at risk in every bin from its entry to its final length. ``events`` marks which
+    finals are real finishes (default: every final below the cap); a censored request -- one that
+    left the observed precision at ``final`` without finishing, e.g. a BF16 request switched to W4
+    there -- passes ``False`` so it drops out of the risk set without counting as an event.
+    """
     entries = np.asarray(entries, dtype=np.int64)
     finals = np.minimum(np.asarray(finals, dtype=np.int64), grid.cap)
     if entries.shape != finals.shape:
         raise ValueError("entries and finals must have the same shape")
+    events_arr = finals < grid.cap if events is None else (np.asarray(events, dtype=bool) & (finals < grid.cap))
+    if events_arr.shape != finals.shape:
+        raise ValueError("events must have the same shape as finals")
     frontiers = grid.frontiers
     table = HazardTable.empty(len(frontiers))
     for i, start in enumerate(frontiers):
@@ -81,7 +92,7 @@ def components(entries: np.ndarray, finals: np.ndarray, grid: PolicyGrid) -> Haz
         alive = eligible & (finals >= start)
         table.risk[i] = alive.sum() / denominator
         bin_end = min(int(start) + grid.step, grid.cap)
-        table.event[i] = np.sum(alive & (finals < bin_end) & (finals < grid.cap)) / denominator
+        table.event[i] = np.sum(alive & (finals < bin_end) & events_arr) / denominator
     return table
 
 

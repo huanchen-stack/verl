@@ -65,6 +65,9 @@ def _add_calibration_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--prior-weight", type=float, default=32.0, help="weighted: calibration worth this many requests")
     parser.add_argument("--alpha-min", type=float, default=0.05, help="weighted: floor of the cohort weight (drift)")
     parser.add_argument("--max-step-tokens", type=int, default=2000, help="hysteresis: max frontier move per revision (0 = off)")
+    parser.add_argument("--bf16-online", action="store_true", help="re-estimate the BF16 line from the run (see online_ema.py caveat)")
+    parser.add_argument("--bf16-prior-weight", type=float, default=None, help="BF16 online: calibration worth this many requests (default: --prior-weight)")
+    parser.add_argument("--bf16-probe-every", type=int, default=0, help="every K-th rollout never switches (uncensored BF16 tail evidence); 0 = off")
     parser.add_argument("--downstream-slope", type=float, default=0.0, help="downstream seconds per sampled token")
     parser.add_argument(
         "--w4-token-penalty",
@@ -140,6 +143,9 @@ def cmd_watch_ema(args: argparse.Namespace) -> int:
         prior_weight=args.prior_weight,
         alpha_min=args.alpha_min,
         max_step_tokens=args.max_step_tokens,
+        bf16_online=args.bf16_online,
+        bf16_prior_weight=args.bf16_prior_weight,
+        bf16_probe_every=args.bf16_probe_every,
     )
     watcher.run(initialize_only=args.initialize_only, poll_interval=args.poll_interval)
     return 0

@@ -37,6 +37,17 @@ Update rules (``update``):
 
 Hysteresis: ``max_step_tokens`` limits how far each committed frontier may move per revision.
 
+BF16 line (``bf16_online``): the same rule applied to the other precision. Every completed rollout is
+one cohort of ``batch`` BF16 requests -- a request that finished under BF16 is an event at its length,
+one that switched is censored at its entry (at risk up to there, then gone) -- and it blends into the
+BF16 table with the same weighted update and prior (``bf16_prior_weight``, default the W4 prior).
+Caveat that keeps it off by default: a run that switches at ``F`` on every rollout censors exactly the
+requests that would inform the BF16 tail beyond ``F``, so the online line beyond ``F`` rests on the few
+rollouts that switched later, a thin and biased sample (replayed on 4B it drifted away from the pure-BF16
+truth). ``bf16_probe_every=K`` fixes that: every K-th revision publishes a never-switch table, so that
+rollout is pure BF16 and its 32 requests are uncensored tail evidence (cost: one rollout in K without the
+switch gain); it turns ``bf16_online`` on.
+
 The rollout runner must fail closed when the watcher dies (the policy would otherwise go stale).
 """
 
@@ -53,7 +64,7 @@ from .calibration import InitialCalibration, W4Group, w4_group_for
 from .cost_model import PolicyGrid, TpotSource, make_tpot_cache
 from .hazard import HazardTable, components, ema_update, weighted_update
 from .policy_builder import build_policy, decisions_array, limit_decision_step, write_policy_atomic
-from .traces import cohort_observation, completed_steps, read_cohorts, trace_lengths
+from .traces import cohort_observation, completed_steps, read_cohorts, resolve_request_id, trace_lengths
 
 DEFAULT_TRACE = "traces/request_lifetimes_replica000_node000.jsonl"
 DEFAULT_COHORTS = "switch_observations.jsonl"
@@ -119,6 +130,50 @@ def replay_cohorts(
     return (groups if grouped else groups[0].table), processed
 
 
+def replay_bf16(
+    base: HazardTable,
+    starts: list[dict[str, Any]],
+    finishes: dict[str, int],
+    cohorts: list[dict[str, Any]],
+    grid: PolicyGrid,
+    *,
+    completed: int | None = None,
+    prior_weight: float = 64.0,
+    alpha_min: float = 0.05,
+) -> tuple[HazardTable, dict[str, int]]:
+    """BF16 line: blend each completed rollout into ``base`` with the W4 groups' weighted update.
+
+    A rollout is a cohort of ``grid.batch`` requests that all entered at 0.  One that finished under
+    BF16 is an event at its length (unless it hit the cap); one that switched is censored at its entry
+    -- at risk until there, then out of the risk set without an event -- so bins beyond the switch see
+    only the requests that were still BF16 there.  Same :func:`weighted_update` and prior semantics as
+    :func:`replay_cohorts`; returns the table and ``{"requests", "censored"}`` counts.
+    """
+    entries: dict[str, int] = {}
+    for cohort in cohorts:
+        for row in cohort.get("requests", []):
+            rid = resolve_request_id(str(row["request_id"]), finishes)
+            if rid is not None:
+                entries[rid] = min(entries.get(rid, 10**9), int(row["entry_output_tokens"]))
+    rows = starts if completed is None else starts[: completed * grid.batch]
+    table = base.copy()
+    seen = 0
+    censored = 0
+    for offset in range(0, len(rows), grid.batch):
+        group = rows[offset : offset + grid.batch]
+        ids = [str(start["request_id"]) for start in group]
+        if len(group) < grid.batch or any(rid not in finishes for rid in ids):
+            break
+        finals = np.array([min(int(finishes[rid]), grid.cap) for rid in ids], dtype=np.int64)
+        switched = np.array([rid in entries and entries[rid] <= finishes[rid] for rid in ids], dtype=bool)
+        exits = np.where(switched, [entries.get(rid, 0) for rid in ids], finals)
+        new = components(np.zeros(len(ids), dtype=np.int64), exits, grid, events=~switched)
+        table, _ = weighted_update(table, new, len(ids), seen, prior_weight=prior_weight, alpha_min=alpha_min)
+        seen += len(ids)
+        censored += int(switched.sum())
+    return table, {"requests": int(seen), "censored": int(censored)}
+
+
 class OnlineEmaWatcher:
     def __init__(
         self,
@@ -140,6 +195,9 @@ class OnlineEmaWatcher:
         prior_weight: float = 32.0,
         alpha_min: float = 0.05,
         max_step_tokens: int = 2000,
+        bf16_online: bool = False,
+        bf16_prior_weight: float | None = None,
+        bf16_probe_every: int = 0,
     ) -> None:
         self.run_dir = Path(run_dir)
         self.policy_path = Path(policy_path)
@@ -159,19 +217,28 @@ class OnlineEmaWatcher:
         self._tpot = tpot
         self.last_revision = -1
         self.last_state: dict[str, Any] | None = None
+        self.bf16_table: HazardTable = calibration.bf16
         self.update = update
         self.prior_weight = float(prior_weight)
         self.alpha_min = float(alpha_min)
         self.max_step_tokens = int(max_step_tokens)
         self._previous_decisions: np.ndarray | None = None
+        self.bf16_online = bool(bf16_online) or int(bf16_probe_every) > 0
+        self.bf16_prior_weight = float(prior_weight if bf16_prior_weight is None else bf16_prior_weight)
+        self.bf16_probe_every = int(bf16_probe_every)
+        self._bf16_stats: dict[str, int] = {}
 
-    def observe(self) -> tuple[int, HazardTable, list[dict[str, Any]]]:
-        """Completed steps, the EMA-updated W4 table and the cohort log, without writing anything."""
+    def observe(self) -> tuple[int, list[W4Group], list[dict[str, Any]]]:
+        """Completed steps, the updated W4 groups and the cohort log, without writing anything.
+
+        Also refreshes ``self.bf16_table`` (the online BF16 line) when ``bf16_online`` is set.
+        """
         starts, finishes = trace_lengths(self.trace_path) if self.trace_path.exists() else ([], {})
         complete = completed_steps(starts, finishes, self.grid.batch)
+        cohorts = read_cohorts(self.cohort_path)
         table, processed = replay_cohorts(
             self.calibration.w4_groups,
-            read_cohorts(self.cohort_path),
+            cohorts,
             finishes,
             self.grid,
             self.alpha,
@@ -180,6 +247,19 @@ class OnlineEmaWatcher:
             prior_weight=self.prior_weight,
             alpha_min=self.alpha_min,
         )
+        if self.bf16_online:
+            self.bf16_table, self._bf16_stats = replay_bf16(
+                self.calibration.bf16,
+                starts,
+                finishes,
+                [c for c in cohorts if not self.gate or int(c.get("rollout_index", 0)) <= complete],
+                self.grid,
+                completed=complete if self.gate else None,
+                prior_weight=self.bf16_prior_weight,
+                alpha_min=self.alpha_min,
+            )
+        else:
+            self.bf16_table = self.calibration.bf16
         return complete, table, processed
 
     def poll(self) -> dict[str, Any] | None:
@@ -189,7 +269,7 @@ class OnlineEmaWatcher:
         if revision == self.last_revision:
             return None
         policy, switch_states = build_policy(
-            self.calibration.bf16,
+            self.bf16_table,
             table,
             self._tpot,
             self.grid,
@@ -207,14 +287,25 @@ class OnlineEmaWatcher:
                 "prior_weight": self.prior_weight,
                 "alpha_min": self.alpha_min,
                 "max_step_tokens": self.max_step_tokens,
+                "bf16_online": self.bf16_online,
+                "bf16_prior_weight": self.bf16_prior_weight,
+                "bf16_probe_every": self.bf16_probe_every,
+                "bf16_online_requests": self._bf16_stats,
                 "w4_groups": [{"cut": g.cut, "requests": g.requests} for g in self.calibration.w4_groups],
             },
             w4_token_penalty=self.w4_token_penalty,
         )
         decisions = decisions_array(policy)
         limited = limit_decision_step(self._previous_decisions, decisions, self.max_step_tokens)
-        policy["lookup_table"]["committed_frontiers"] = limited.reshape(-1).tolist()
         self._previous_decisions = limited
+        probe = self.bf16_probe_every > 0 and revision > 0 and revision % self.bf16_probe_every == 0
+        if probe:
+            # BF16 probe: the next rollout never switches, so every request is an uncensored BF16 observation
+            # (the only way the run can learn the BF16 tail beyond its own switch point). The limited table is
+            # kept as the hysteresis anchor and published again on the following revision.
+            limited = np.zeros_like(limited)
+        policy["lookup_table"]["committed_frontiers"] = limited.reshape(-1).tolist()
+        policy["calibration"]["bf16_probe"] = bool(probe)
         write_policy_atomic(self.policy_path, policy)
         state = {
             "completed_steps": complete,

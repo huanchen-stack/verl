@@ -214,3 +214,48 @@ def test_paired_traces_still_single_group(tmp_path, requests):
     assert cal.cuts == [0] and cal.w4_groups[0].requests == requests
     sv = survival(cal.w4, 0)
     assert 0 < sv[GRID.frontier_index(1000)] < 1
+
+
+def test_replay_bf16_uses_the_w4_rule_with_switched_requests_censored_and_probe_publishes_never_switch(tmp_path):
+    from verl.experimental.precision_scheduler.hazard import weighted_update
+    from verl.experimental.precision_scheduler.online_ema import OnlineEmaWatcher, replay_bf16
+    from verl.experimental.precision_scheduler.tpot_grid import TpotGrid
+    from verl.experimental.precision_scheduler.policy_builder import decisions_array, load_policy
+
+    grid = PolicyGrid(step=250, cap=4096, batch=4, prompt_step=128, prompt_max=0)
+    base = from_finals([500, 900, 1500, 3000], [600, 1200, 2500, 4000], grid).bf16
+    starts = [{"request_id": f"r{i}"} for i in range(4)]
+    finishes = {"r0": 700, "r1": 2500, "r2": 3900, "r3": 4000}
+    cohorts = [{"event": "switch_cohort", "rollout_index": 1, "requests": [{"request_id": "r1-deadbeef", "entry_output_tokens": 1000}, {"request_id": "r2-deadbeef", "entry_output_tokens": 1000}]}]
+    table, stats = replay_bf16(base, starts, finishes, cohorts, grid, prior_weight=4.0)
+    assert stats == {"requests": 4, "censored": 2}  # r1, r2 left BF16 at 1000
+    # identical to one weighted_update with the rollout's fraction table: r1/r2 alive up to 1000 and no event,
+    # r0 an event in [500,750), r3 a cap-runner
+    expected = components(np.zeros(4, dtype=np.int64), np.array([700, 1000, 1000, 4000]), grid, events=np.array([True, False, False, True]))
+    manual, weight = weighted_update(base, expected, 4, 0, prior_weight=4.0, alpha_min=0.05)
+    assert weight == pytest.approx(0.5)
+    np.testing.assert_allclose(table.risk, manual.risk)
+    np.testing.assert_allclose(table.event, manual.event)
+    i_1250 = grid.frontier_index(1250)
+    assert expected.risk[i_1250] == pytest.approx(0.25) and expected.event[i_1250] == 0.0  # only r3 still at risk, no event
+    # bins beyond every request are unobserved by the rollout and keep the base hazard
+    i_tail = grid.frontier_index(3000)
+    assert expected.risk[i_tail] == pytest.approx(0.25)
+    # watcher with probes: revision K publishes a never-switch table and marks it
+    tpot = TpotGrid([1, 8], [512, 4096], np.full((2, 2), 14.0), np.full((2, 2), 10.0))
+    cal = from_finals([500, 900, 1500, 3000, 3500, 4000, 4000, 4000], [600, 1200, 2500, 4000, 4000, 4000, 4000, 4000], GRID)
+    w = OnlineEmaWatcher(run_dir=tmp_path, policy_path=tmp_path / "p.json", calibration=cal, tpot=tpot, grid=GRID, alpha=0.2, slope=0.0009, steps=4, bf16_probe_every=2)
+    assert w.bf16_online
+    w.run(initialize_only=True, quiet=True)
+    assert decisions_array(load_policy(tmp_path / "p.json")).any()
+    (tmp_path / "traces").mkdir()
+    with (tmp_path / "traces" / "request_lifetimes_replica000_node000.jsonl").open("w") as f:
+        for step in (1, 2):
+            for k in range(8):
+                rid = f"s{step}r{k}"
+                f.write(json.dumps({"event": "start", "request_id": rid, "prompt_tokens": 5, "timestamp": 0}) + "\n")
+                f.write(json.dumps({"event": "finish", "request_id": rid, "generation_tokens": 800 + 300 * k, "finish_reason": "stop", "timestamp": 1}) + "\n")
+    state = w.poll()
+    assert state["policy_revision"] == 2
+    pol = load_policy(tmp_path / "p.json")
+    assert pol["calibration"]["bf16_probe"] is True and not decisions_array(pol).any()
