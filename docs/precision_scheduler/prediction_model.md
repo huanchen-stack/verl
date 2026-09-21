@@ -138,6 +138,37 @@ of never on the exploration rollout (observes the bins that decide "switch or wa
 gain beyond). The CPU replays are in the session scratchpads (`replay_bf16*.py`, `unified.py`,
 `bf16_ema.py`).
 
+
+### 3.5 Shared survival clock (`--update clock`, 2026-09-21) — the current default candidate
+
+Instead of per-bin updates, each line keeps its calibration shape and learns one termination-intensity
+parameter from a censored likelihood (`online_ema.py replay_clock`): `S_t = S_0^a`, `a = (kappa + D)/(kappa + E)`,
+`D` = natural finishes, `E` = accumulated cumulative hazard of every observation (BF16: censored at the switch;
+W4 group g: exposure `H_g(y) - H_g(s)` from the switch position), discounted by `rho` = 0.9 per rollout;
+`kappa` = prior weight (BF16) or prior weight x group size / 256 (W4 groups). Frozen tables are `a = 1`. No bin
+can be rewritten by a handful of requests, both lines move, and the CPU replay keeps the Qwen decisions inside
+the measured flat band where the per-bin update drifted out. Calibrated with 5 cuts at alive fractions
+1/2..1/6 and 64 sampled continuations per cut (`--continuations-per-cut 64`; 9B cuts 1750/4250/5500/6250/7000,
+4B 2750/5000/6250/7250/8250).
+
+Results, B32 / cap 24k, steps 9-48 vs pooled BF16 (run dirs `b32c24_<model>_clock_p{64,128}`):
+
+| model | arm | rollout | step | tokens | reward | switch point (live) |
+|---|---|---:|---:|---:|---:|---|
+| 4B | clock p64 | **1.376x** | **1.240x** | -3% | 0.858 | 2750 (15-20) for 16 rollouts, then 6750-7250 (8) |
+| 4B | clock p128 | 1.349x | 1.205x | +1% | 0.861 | 6000 then 2250-2750 (14) |
+| 4B | W4-only p64 (previous best) | 1.328x | 1.195x | 0% | 0.856 | 3750 (11.5) |
+| 9B | clock p64 | 1.194x | 1.081x | +13% | 0.851 | 5500 (7) |
+| 9B | clock p128 | 1.193x | 1.070x | +17% | 0.852 | 3250 (11.5) |
+| 9B | W4-only p64 | 1.182x | 1.098x | +5% | 0.858 | 8000 (4) |
+| 9B | fixed 7000 | 1.239x | 1.126x | +6% | 0.869 | 7000 (6) |
+
+4B: best arm measured, both priors above the W4-only arm, reward unchanged. 9B: on par with W4-only on rollout,
+slightly below on step (inside the CIs) and below fixed 7000: it switches earlier (3250-5500 with 7-12 live) and
+pays 13-17% tokens; its W4 group parameters did learn the inflation (a_1750 0.7, a_4250 0.75-0.84) but the cost
+model still preferred the early switch -- the remaining 9B question is the price of tokens in the cost model, not
+the estimator.
+
 ## 4. Things that are *not* in the model (checked, so nobody re-derives them)
 
 * **Batch size does not move the switch point.** Saving and cost of a switch both scale with the
