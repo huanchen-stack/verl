@@ -26,7 +26,7 @@ import sys
 from pathlib import Path
 
 from . import downstream_regression as regression
-from .calibration import grouped_traces, paired_traces
+from .calibration import InitialCalibration, grouped_traces, paired_traces
 from .cost_model import PolicyGrid
 from .online_ema import DEFAULT_COHORTS, DEFAULT_TRACE, OnlineEmaWatcher
 from .policy_builder import build_policy, fixed_frontier_policy, validate_policy, write_policy_atomic
@@ -59,6 +59,7 @@ def _add_calibration_arguments(parser: argparse.ArgumentParser) -> None:
         "baseline becomes the cut-0 group",
     )
     parser.add_argument("--calibration-requests", type=int, default=128)
+    parser.add_argument("--w4-min-cut", type=int, default=0, help="drop tail-W4 groups with cut below this (cut 0 stays); 0 = keep all")
     parser.add_argument("--heatmap", type=Path, required=True, help="profiler heatmap.json")
     parser.add_argument("--alpha", type=float, default=0.2, help="fixed cohort weight for --update ema")
     parser.add_argument("--update", choices=("weighted", "ema", "clock"), default="weighted", help="online update rule")
@@ -81,9 +82,18 @@ def _add_calibration_arguments(parser: argparse.ArgumentParser) -> None:
 
 def _calibration(args: argparse.Namespace, grid: PolicyGrid):
     if args.w4_cont_trace is not None:
-        return grouped_traces(
+        cal = grouped_traces(
             args.bf_trace, args.w4_cont_trace, grid, requests=args.calibration_requests, include_uniform_w4=args.w4_trace
         )
+        keep = getattr(args, "w4_min_cut", None)
+        if keep:
+            # drop the tail-W4 groups below --w4-min-cut (the cut-0 uniform-W4 group stays): switches below the first
+            # remaining cut are then priced by the uniform-W4 baseline, a deliberately pessimistic prior.
+            groups = [g for g in cal.w4_groups if g.cut == 0 or g.cut >= keep]
+            if not any(g.cut >= keep for g in groups):
+                raise SystemExit(f"--w4-min-cut {keep} leaves no tail-W4 group (cuts {[g.cut for g in cal.w4_groups]})")
+            cal = InitialCalibration(bf16=cal.bf16, w4=groups[0].table, metadata={**cal.metadata, "w4_groups": [{"cut": g.cut, "requests": g.requests} for g in groups], "w4_min_cut": keep}, w4_groups=groups)
+        return cal
     if args.w4_trace is None:
         raise SystemExit("give --w4-trace (legacy pure-W4 baseline) and/or --w4-cont-trace (calib-tail-w4 output)")
     return paired_traces(args.bf_trace, args.w4_trace, grid, requests=args.calibration_requests)
