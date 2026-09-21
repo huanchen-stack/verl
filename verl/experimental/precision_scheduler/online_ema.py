@@ -304,6 +304,7 @@ class OnlineEmaWatcher:
         bf16_prior_weight: float | None = None,
         bf16_probe_every: int = 0,
         rho: float = 0.9,
+        unconditional: bool = False,
     ) -> None:
         self.run_dir = Path(run_dir)
         self.policy_path = Path(policy_path)
@@ -334,6 +335,7 @@ class OnlineEmaWatcher:
         self.bf16_probe_every = int(bf16_probe_every)
         self._bf16_stats: dict[str, Any] = {}
         self.rho = float(rho)
+        self.unconditional = bool(unconditional)
         if self.update == "clock":
             self.bf16_online = True  # the clock learns both lines by construction
 
@@ -413,6 +415,7 @@ class OnlineEmaWatcher:
                 "w4_groups": [{"cut": g.cut, "requests": g.requests} for g in self.calibration.w4_groups],
             },
             w4_token_penalty=self.w4_token_penalty,
+            unconditional=self.unconditional,
         )
         decisions = decisions_array(policy)
         limited = limit_decision_step(self._previous_decisions, decisions, self.max_step_tokens)

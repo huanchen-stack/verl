@@ -204,11 +204,16 @@ def build_policy(
     cache: dict[str, np.ndarray] | None = None,
     extra_calibration: dict[str, Any] | None = None,
     w4_token_penalty: float = 0.0,
+    unconditional: bool = False,
 ) -> tuple[dict[str, Any], int]:
     """Run the global search and return ``(policy_json, switch_states)``."""
     if cache is None:
         cache = make_tpot_cache(grid, tpot)
     decisions = build_decisions(bf, w4, cache, grid, slope, w4_token_penalty=w4_token_penalty)
+    if unconditional:
+        # ablation: the switch frontier chosen at the rollout start for the full batch is used in every cell, i.e. no
+        # re-conditioning of the survival lines on the current frontier or live count
+        decisions = np.broadcast_to(decisions[0:1, :, grid.batch - 1 : grid.batch], decisions.shape).copy()
     if description is None:
         description = f"B{grid.batch} cap{grid.cap // 1024}K model-specific EMA future-frontier global full-cost lookup"
     calibration = {
@@ -221,6 +226,7 @@ def build_policy(
         calibration.update(extra_calibration)
     policy = policy_from_decisions(decisions, grid, description=description, calibration=calibration, slope=slope)
     policy["offline_cost_model"]["w4_token_penalty_seconds"] = float(w4_token_penalty)
+    policy["offline_cost_model"]["unconditional"] = bool(unconditional)
     return policy, int(np.count_nonzero(decisions))
 
 

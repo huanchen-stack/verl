@@ -58,6 +58,7 @@ else
   [[ "${EMA_BF16_PROBE_EVERY:-0}" != "0" ]] && watcher+=(--bf16-probe-every "${EMA_BF16_PROBE_EVERY}")
   [[ -n "${W4_CONT_TRACE:-}" ]] && watcher+=(--w4-cont-trace "${W4_CONT_TRACE}")
   [[ -n "${W4_MIN_CUT:-}" ]] && watcher+=(--w4-min-cut "${W4_MIN_CUT}")
+  [[ "${EMA_UNCONDITIONAL:-0}" == "1" ]] && watcher+=(--unconditional)
   [[ -n "${W4_TRACE:-}" ]] && watcher+=(--w4-trace "${W4_TRACE}")
   if [[ -n "${WATCHER_EXTRA_ARGS:-}" ]]; then read -r -a extra <<<"${WATCHER_EXTRA_ARGS}"; watcher+=("${extra[@]}"); fi
 fi
