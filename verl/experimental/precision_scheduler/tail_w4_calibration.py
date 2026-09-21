@@ -142,12 +142,24 @@ def plan_continuations(
     *,
     cap: int,
     prompt_ids_for: Callable[[str], Sequence[int]],
+    per_cut: int | None = None,
+    seed: int = 0,
 ) -> list[ContinuationRequest]:
     """One continuation per (request, cut) with request length >= cut > 0, or every request for cut 0.
 
-    ``prompt_ids_for(trace_request_id)`` must return the exact prompt token ids used by the BF16
-    rollout; its length is checked against the trace's ``prompt_tokens``.
+    ``per_cut`` caps the continuations of each cut to a uniform random sample (without replacement,
+    seeded) of the requests alive there; ``None`` takes every one. ``prompt_ids_for(trace_request_id)``
+    must return the exact prompt token ids used by the BF16 rollout; its length is checked against
+    the trace's ``prompt_tokens``.
     """
+    rows = list(rows)
+    chosen: dict[int, set[str]] = {}
+    if per_cut is not None:
+        rng = np.random.default_rng(seed)
+        for cut in cuts:
+            alive = [row["trace_request_id"] for row in rows if cut == 0 or row["length"] >= cut]
+            take = rng.choice(len(alive), size=min(per_cut, len(alive)), replace=False) if alive else []
+            chosen[int(cut)] = {alive[i] for i in take}
     plan: list[ContinuationRequest] = []
     for row in rows:
         tid = row["trace_request_id"]
@@ -160,6 +172,8 @@ def plan_continuations(
         ids = row["token_ids"]
         for cut in cuts:
             if cut > 0 and row["length"] < cut:
+                continue
+            if per_cut is not None and tid not in chosen[int(cut)]:
                 continue
             if len(ids) < cut:
                 raise ValueError(f"{tid}: {len(ids)} logged token ids but cut {cut}")

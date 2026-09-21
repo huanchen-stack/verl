@@ -34,6 +34,11 @@ Update rules (``update``):
   ``max(n / (prior_weight + n_seen + n), alpha_min)`` -- fast while evidence is thin, then decaying
   toward ``alpha_min`` (a slow EMA for drift).  A 4-request cohort can no longer flip the table.
 * ``"ema"``: the legacy fixed-``alpha`` blend into the single W4 table.
+* ``"clock"``: shared survival clock on both lines (:func:`replay_clock`): calibration shapes are kept and
+  each line learns one termination-intensity parameter from a censored likelihood (BF16 from every request,
+  censored at its switch; each W4 group from the requests switched into it, exposure from the switch
+  position), discounted by ``rho`` per rollout.  No bin can be rewritten by a handful of requests, and the
+  frozen tables are the special case ``a = 1``.  Turns the BF16 line on.
 
 Hysteresis: ``max_step_tokens`` limits how far each committed frontier may move per revision.
 
@@ -174,6 +179,106 @@ def replay_bf16(
     return table, {"requests": int(seen), "censored": int(censored)}
 
 
+def _cum_hazard(table: HazardTable, start: int, grid: PolicyGrid) -> tuple[np.ndarray, np.ndarray]:
+    """(H, x): cumulative hazard from the start of bin ``start`` (H[0]=0 at x[0]) on bin starts plus the cap."""
+    h = np.clip(table.hazard()[start:], 0.0, 1.0 - 1e-6)
+    H = np.concatenate(([0.0], np.cumsum(-np.log1p(-h))))
+    x = np.concatenate((grid.frontiers[start:], [float(grid.cap)]))
+    return H, x
+
+
+def _powered_table(table: HazardTable, start: int, a: float, grid: PolicyGrid) -> HazardTable:
+    """Hazard table with every bin's survival raised to ``a`` (``1 - h`` -> ``(1 - h)^a``); bins below ``start`` unobserved."""
+    h = np.clip(table.hazard(), 0.0, 1.0)
+    ha = 1.0 - np.power(1.0 - h, a)
+    n = len(grid.frontiers)
+    risk = np.zeros(n)
+    event = np.zeros(n)
+    observed = np.zeros(n, dtype=bool)
+    risk[start:] = 1.0
+    event[start:] = ha[start:]
+    observed[start:] = True
+    return HazardTable(risk=risk, event=event, observed=observed)
+
+
+def replay_clock(
+    calibration: InitialCalibration,
+    starts: list[dict[str, Any]],
+    finishes: dict[str, int],
+    cohorts: list[dict[str, Any]],
+    grid: PolicyGrid,
+    *,
+    completed: int | None = None,
+    prior_weight: float = 64.0,
+    rho: float = 0.9,
+) -> tuple[HazardTable, list[W4Group], dict[str, Any]]:
+    """Shared survival clock on both lines: the calibration curves keep their shape, each line learns one
+    termination-intensity parameter ``a`` (``S_t = S_0^a``; a>1 = shorter responses) from a censored
+    likelihood -- ``a = (kappa + D) / (kappa + E)`` with ``D`` = natural finishes and ``E`` = accumulated
+    cumulative hazard ``H_0`` of every observation (a censored request contributes exposure up to where it
+    left: the switch for BF16, the cap for either), both discounted by ``rho`` per rollout.
+
+    BF16: one ``a`` over the whole run (kappa = prior_weight).  W4: one ``a_g`` per continuation group,
+    exposure measured from the switch position ``H_g(y) - H_g(s)`` (kappa_g = prior_weight * group size / 256).
+    Frozen tables are the special case ``a = 1``.  Returns the two lines as hazard tables plus the parameters.
+    """
+    frontiers = grid.frontiers
+    H16, x16 = _cum_hazard(calibration.bf16, 0, grid)
+    groups = calibration.w4_groups
+    starts_idx = {g.cut: (grid.frontier_index(max(g.cut, grid.step)) if g.cut > 0 else 0) for g in groups}
+    Hg: dict[int, tuple[np.ndarray, np.ndarray]] = {g.cut: _cum_hazard(g.table, starts_idx[g.cut], grid) for g in groups}
+    entries: dict[str, int] = {}
+    for cohort in cohorts:
+        for row in cohort.get("requests", []):
+            rid = resolve_request_id(str(row["request_id"]), finishes)
+            if rid is not None:
+                entries[rid] = min(entries.get(rid, 10**9), int(row["entry_output_tokens"]))
+    by_rollout: dict[int, list[dict[str, Any]]] = {}
+    for cohort in cohorts:
+        by_rollout.setdefault(int(cohort.get("rollout_index", 0)), []).append(cohort)
+    rows = starts if completed is None else starts[: completed * grid.batch]
+    d16 = e16 = 0.0
+    dg = {g.cut: 0.0 for g in groups}
+    eg = {g.cut: 0.0 for g in groups}
+    kappa16 = float(prior_weight)
+    kg = {g.cut: float(prior_weight) * g.requests / 256.0 for g in groups}
+    n_roll = 0
+    for offset in range(0, len(rows), grid.batch):
+        group = rows[offset : offset + grid.batch]
+        ids = [str(r["request_id"]) for r in group]
+        if len(group) < grid.batch or any(rid not in finishes for rid in ids):
+            break
+        n_roll += 1
+        d = e = 0.0
+        for rid in ids:
+            length = min(int(finishes[rid]), grid.cap)
+            switched = rid in entries and entries[rid] <= length
+            y = entries[rid] if switched else length
+            d += float((not switched) and length < grid.cap)
+            e += float(np.interp(y, x16, H16))
+        d16 = rho * d16 + d
+        e16 = rho * e16 + e
+        for cut in dg:
+            dg[cut] *= rho
+            eg[cut] *= rho
+        for cohort in by_rollout.get(n_roll, []):
+            obs = cohort_observation(cohort, finishes, grid.cap)
+            if obs is None:
+                continue
+            ent, fin, _ = obs
+            cut = w4_group_for(groups, int(np.median(ent))).cut
+            H, x = Hg[cut]
+            dg[cut] += float(np.sum(fin < grid.cap))
+            eg[cut] += float(sum(np.interp(f, x, H) - np.interp(max(s, x[0]), x, H) for s, f in zip(ent, fin)))
+    a16 = (kappa16 + d16) / (kappa16 + e16) if e16 > 0 else 1.0
+    ag = {cut: ((kg[cut] + dg[cut]) / (kg[cut] + eg[cut]) if eg[cut] > 0 else 1.0) for cut in dg}
+    bf16 = _powered_table(calibration.bf16, 0, a16, grid)
+    w4 = [W4Group(cut=g.cut, table=_powered_table(g.table, starts_idx[g.cut], ag[g.cut], grid), requests=g.requests) for g in groups]
+    info = {"a16": float(a16), "a_w4": {int(c): float(v) for c, v in ag.items()}, "rollouts": n_roll,
+            "bf16_events": float(d16), "bf16_exposure": float(e16), "w4_events": {int(c): float(v) for c, v in dg.items()}}
+    return bf16, w4, info
+
+
 class OnlineEmaWatcher:
     def __init__(
         self,
@@ -198,6 +303,7 @@ class OnlineEmaWatcher:
         bf16_online: bool = False,
         bf16_prior_weight: float | None = None,
         bf16_probe_every: int = 0,
+        rho: float = 0.9,
     ) -> None:
         self.run_dir = Path(run_dir)
         self.policy_path = Path(policy_path)
@@ -226,7 +332,10 @@ class OnlineEmaWatcher:
         self.bf16_online = bool(bf16_online) or int(bf16_probe_every) > 0
         self.bf16_prior_weight = float(prior_weight if bf16_prior_weight is None else bf16_prior_weight)
         self.bf16_probe_every = int(bf16_probe_every)
-        self._bf16_stats: dict[str, int] = {}
+        self._bf16_stats: dict[str, Any] = {}
+        self.rho = float(rho)
+        if self.update == "clock":
+            self.bf16_online = True  # the clock learns both lines by construction
 
     def observe(self) -> tuple[int, list[W4Group], list[dict[str, Any]]]:
         """Completed steps, the updated W4 groups and the cohort log, without writing anything.
@@ -236,6 +345,15 @@ class OnlineEmaWatcher:
         starts, finishes = trace_lengths(self.trace_path) if self.trace_path.exists() else ([], {})
         complete = completed_steps(starts, finishes, self.grid.batch)
         cohorts = read_cohorts(self.cohort_path)
+        if self.update == "clock":
+            used = [c for c in cohorts if not self.gate or int(c.get("rollout_index", 0)) <= complete]
+            self.bf16_table, groups, info = replay_clock(
+                self.calibration, starts, finishes, used, self.grid,
+                completed=complete if self.gate else None, prior_weight=self.prior_weight, rho=self.rho,
+            )
+            self._bf16_stats = info
+            processed = [{"rollout_index": int(c.get("rollout_index", 0)), "requests": len(c.get("requests", []))} for c in used]
+            return complete, groups, processed
         table, processed = replay_cohorts(
             self.calibration.w4_groups,
             cohorts,
@@ -290,6 +408,7 @@ class OnlineEmaWatcher:
                 "bf16_online": self.bf16_online,
                 "bf16_prior_weight": self.bf16_prior_weight,
                 "bf16_probe_every": self.bf16_probe_every,
+                "rho": self.rho,
                 "bf16_online_requests": self._bf16_stats,
                 "w4_groups": [{"cut": g.cut, "requests": g.requests} for g in self.calibration.w4_groups],
             },

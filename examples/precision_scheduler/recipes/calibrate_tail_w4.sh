@@ -6,7 +6,8 @@
 # Path 2 (tail W4): every path-1 request still generating at each cut frontier is re-issued as
 #   prompt + its own BF16 prefix and decoded under uniform W4 from there (cli calib-tail-w4). Cuts are
 #   population quantiles of the path-1 lengths (CUT_QUANTILES, default 0.667,0.75,0.8,0.9) or explicit
-#   CUT_TOKENS (0 = the legacy uniform-W4 path). Cost: sum(1 - q) continuations per request, one batch.
+#   CUT_TOKENS (0 = the legacy uniform-W4 path). Cost: sum(1 - q) continuations per request, one batch, or
+#   CONTINUATIONS_PER_CUT=64 to take a uniform random sample of the requests alive at each cut.
 #
 # Usage:  RUN_DIR=... MODEL_KEY=qwen3_5_9b MODEL_PATH=... INT4_MODEL_PATH=... \
 #           [INITIAL_BATCH=32 ROLLOUT_STEPS=8 RESPONSE_CAP=24576 CUT_QUANTILES=0.667,0.75,0.8,0.9] \
@@ -52,6 +53,7 @@ cmd=("${PS_PYTHON}" -m verl.experimental.precision_scheduler.cli calib-tail-w4
   --gpu-memory-utilization "${GPU_MEMORY_UTILIZATION:-0.5}" --max-num-seqs "${MAX_NUM_SEQS:-64}" --log-tokens
   "${cuts[@]}")
 [[ -n "${LORA_ADAPTER:-}" ]] && cmd+=(--lora-adapter "${LORA_ADAPTER}")
+[[ -n "${CONTINUATIONS_PER_CUT:-}" ]] && cmd+=(--continuations-per-cut "${CONTINUATIONS_PER_CUT}")
 if [[ "${DRY_RUN:-0}" == "1" ]]; then cmd+=(--dry-run); fi
 mkdir -p "${tail_dir}"
 echo "### calib-tail-w4: ${cmd[*]}"

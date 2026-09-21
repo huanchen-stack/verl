@@ -259,3 +259,44 @@ def test_replay_bf16_uses_the_w4_rule_with_switched_requests_censored_and_probe_
     assert state["policy_revision"] == 2
     pol = load_policy(tmp_path / "p.json")
     assert pol["calibration"]["bf16_probe"] is True and not decisions_array(pol).any()
+
+
+def test_replay_clock_learns_one_parameter_per_line_and_frozen_is_a_equals_one(tmp_path):
+    from verl.experimental.precision_scheduler.online_ema import OnlineEmaWatcher, replay_clock
+    from verl.experimental.precision_scheduler.tpot_grid import TpotGrid
+    from verl.experimental.precision_scheduler.policy_builder import decisions_array, load_policy
+
+    grid = PolicyGrid(step=250, cap=4096, batch=4, prompt_step=128, prompt_max=0)
+    rng = np.random.default_rng(0)
+    bf_cal = list(rng.integers(600, 3000, 64)); w4_cal = list(rng.integers(700, 3200, 64))
+    cal = from_finals(bf_cal, w4_cal, grid)
+    # no data -> a = 1 on both lines: tables reproduce the calibration survival
+    bf, groups, info = replay_clock(cal, [], {}, [], grid, prior_weight=16.0)
+    assert info["a16"] == 1.0 and all(v == 1.0 for v in info["a_w4"].values())
+    np.testing.assert_allclose(survival(bf, 0), survival(cal.bf16, 0), atol=1e-6)
+    # a run whose BF16 requests finish much earlier than the calibration -> a16 > 1 (shorter), survival below calibration
+    starts = [{"request_id": f"r{i}"} for i in range(16)]
+    finishes = {f"r{i}": int(v) for i, v in enumerate(rng.integers(300, 900, 16))}
+    bf2, _, info2 = replay_clock(cal, starts, finishes, [], grid, prior_weight=4.0)
+    assert info2["a16"] > 1.5
+    assert survival(bf2, 0)[grid.frontier_index(1000)] < survival(cal.bf16, 0)[grid.frontier_index(1000)]
+    # switched requests with long W4 tails -> the group's a < 1 (longer), BF16 sees them only as exposure up to the switch
+    cohorts = [{"event": "switch_cohort", "rollout_index": 1, "requests": [{"request_id": f"r{i}-deadbeef", "entry_output_tokens": 500} for i in range(4)]}]
+    fin3 = {f"r{i}": 3800 for i in range(4)}
+    _, groups3, info3 = replay_clock(cal, starts[:4], fin3, cohorts, grid, prior_weight=4.0)
+    assert list(info3["a_w4"].values())[0] < 1.0
+    # watcher end to end with update="clock"
+    tpot = TpotGrid([1, 8], [512, 4096], np.full((2, 2), 14.0), np.full((2, 2), 10.0))
+    w = OnlineEmaWatcher(run_dir=tmp_path, policy_path=tmp_path / "p.json", calibration=cal, tpot=tpot, grid=grid, alpha=0.2, slope=0.0009, steps=4, update="clock", prior_weight=16.0)
+    assert w.bf16_online
+    w.run(initialize_only=True, quiet=True)
+    pol = load_policy(tmp_path / "p.json")
+    assert pol["calibration"]["update_rule"] == "clock" and pol["calibration"]["bf16_online_requests"]["a16"] == 1.0
+    (tmp_path / "traces").mkdir()
+    with (tmp_path / "traces" / "request_lifetimes_replica000_node000.jsonl").open("w") as f:
+        for k in range(4):
+            f.write(json.dumps({"event": "start", "request_id": f"s1r{k}", "prompt_tokens": 5, "timestamp": 0}) + "\n")
+            f.write(json.dumps({"event": "finish", "request_id": f"s1r{k}", "generation_tokens": 400 + 100 * k, "finish_reason": "stop", "timestamp": 1}) + "\n")
+    state = w.poll()
+    assert state["policy_revision"] == 1
+    assert load_policy(tmp_path / "p.json")["calibration"]["bf16_online_requests"]["a16"] > 1.0

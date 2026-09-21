@@ -61,7 +61,8 @@ def _add_calibration_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--calibration-requests", type=int, default=128)
     parser.add_argument("--heatmap", type=Path, required=True, help="profiler heatmap.json")
     parser.add_argument("--alpha", type=float, default=0.2, help="fixed cohort weight for --update ema")
-    parser.add_argument("--update", choices=("weighted", "ema"), default="weighted", help="online update rule")
+    parser.add_argument("--update", choices=("weighted", "ema", "clock"), default="weighted", help="online update rule")
+    parser.add_argument("--rho", type=float, default=0.9, help="clock: discount of the accumulated events/exposure per rollout")
     parser.add_argument("--prior-weight", type=float, default=32.0, help="weighted: calibration worth this many requests")
     parser.add_argument("--alpha-min", type=float, default=0.05, help="weighted: floor of the cohort weight (drift)")
     parser.add_argument("--max-step-tokens", type=int, default=2000, help="hysteresis: max frontier move per revision (0 = off)")
@@ -146,6 +147,7 @@ def cmd_watch_ema(args: argparse.Namespace) -> int:
         bf16_online=args.bf16_online,
         bf16_prior_weight=args.bf16_prior_weight,
         bf16_probe_every=args.bf16_probe_every,
+        rho=args.rho,
     )
     watcher.run(initialize_only=args.initialize_only, poll_interval=args.poll_interval)
     return 0
@@ -167,7 +169,7 @@ def cmd_calib_tail_w4(args: argparse.Namespace) -> int:
 
     tokenizer = AutoTokenizer.from_pretrained(args.tokenizer or args.model, trust_remote_code=True)
     lookup = tw.prompt_ids_from_parquet(args.data, tokenizer, chat_template_kwargs=json.loads(args.chat_template_kwargs))
-    plan = tw.plan_continuations(rows, cuts, cap=args.cap, prompt_ids_for=lookup)
+    plan = tw.plan_continuations(rows, cuts, cap=args.cap, prompt_ids_for=lookup, per_cut=args.continuations_per_cut, seed=args.seed)
     payload = tw.manifest(cuts, plan, quantiles=quantiles, cap=args.cap, bf16_requests_count=len(rows))
     payload.update({"bf16_trace": str(args.bf_trace), "output_trace": str(args.output_trace), "model": args.model, "int4_model": args.int4_model})
     tw.write_manifest(args.output_trace.parent / "calibration_manifest.json", payload)
@@ -304,6 +306,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-lora-fast-path", action="store_true")
     p.add_argument("--no-lora-dual-stream", action="store_true")
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--continuations-per-cut", type=int, default=None, help="uniform random sample of the requests alive at each cut (default: all)")
     p.add_argument("--gpu-memory-utilization", type=float, default=0.5)
     p.add_argument("--max-num-seqs", type=int, default=64)
     p.add_argument("--log-tokens", action="store_true", help="record continuation token ids in the trace")

@@ -1,0 +1,171 @@
+# The prediction model behind the switch decision (state as of 2026-09-21)
+
+Audience: an agent that has to read, modify or evaluate the scheduler. Every claim points at code on
+branch `rollout-precision-scheduler-clean` (verl fork); paths are relative to
+`verl/experimental/precision_scheduler/` unless stated. Line numbers are from commit `bc3b3543`.
+
+## 1. What is predicted, and what the decision is
+
+The rollout decodes a batch of `B` requests in BF16 and may switch the **whole batch** to the INT4
+shadow ("W4") once, at a frontier `F` on a 250-token grid. The scheduler needs, for every
+(current frontier `f`, prompt bucket, live count `n`), the frontier at which to switch — or 0 for
+"do not switch from here". That table is the policy (`lookup_table.committed_frontiers`,
+`policy_builder.py:349 decisions_array`, consumed in vLLM by
+`vllm/v1/core/sched/precision_policy.py:354 LookupTable.committed_frontier`, re-read at every
+frontier = receding horizon: a cell equal to the current frontier means "switch now").
+
+The prediction is a **cost comparison of two survival lines** (`policy_builder.py:77 build_decisions`,
+loop at lines 106–121):
+
+```
+stay(f)        = E[ BF16 decode steps from f  x TPOT_bf16(ctx, live) ] + slope x E[ BF16 tokens ]
+switch(f -> F) = BF16 steps f..F + P(alive at F | at f) x E[ W4 steps from F x TPOT_w4 ] + slope x E[ W4 tokens ]
+decision(f)    = argmin_F switch(f -> F)  if it beats stay(f), else 0
+```
+
+`TPOT` comes from the profiled heatmap (`cost_model.py:78 make_tpot_cache`, `tpot_grid.py`);
+`slope` is the downstream (trainer) seconds per generated token (`cli.py --downstream-slope`,
+fitted with `fit-downstream`); the expected steps/tokens come from the survival lines
+(`cost_model.py:123 trajectory_cost_grid`, which also converts per-request survival into the
+expected *non-empty-batch* decode steps for `live` requests).
+
+Two lines feed it:
+
+* **BF16 line**: `P(a request alive at s finishes in bin s)` for every bin, as a hazard table
+  (`hazard.py:38 HazardTable`, survival = product of `1 - hazard`, `hazard.py:138 survival`).
+* **W4 line(s)**: the same quantity *after a switch*, i.e. what a request that was BF16 up to `F`
+  does once it continues in W4.
+
+Everything below is about where these two lines come from and how they move during the run.
+
+## 2. Difference 1 — the W4 line is calibrated per switch point (tail-W4 groups)
+
+Old design: one W4 table from a *uniform* W4 rollout (every request decoded in W4 from token 0,
+`calibration.py:115 paired_traces`). Used as the after-switch line at every `F`, it is the wrong
+conditional: a request that reached `F` in BF16 and then continues in W4 is not a request generated
+in W4 from scratch (uniform W4 inflates length and loses reward; tail-W4 measured 0.9–1.0x at step 0).
+
+New design (`calib-tail-w4`, `cli.py:287`; module `tail_w4_calibration.py`):
+
+1. Run the 256 calibration prompts once in BF16 (recipe path 1,
+   `examples/precision_scheduler/recipes/calibrate_tail_w4.sh`).
+2. Choose cuts as **population quantiles** of the BF16 lengths, floored to the 250 grid
+   (`tail_w4_calibration.py:76 cut_frontiers`; default quantiles `DEFAULT_QUANTILES` = 2/3, 3/4,
+   4/5, 9/10 → `--cut-quantiles`, or explicit `--cut-tokens`; the Phi run used 1000/1500/2500, the
+   9B run 4250/7000/9000, the 4B run 5000/8250/10750).
+3. For every cut `c` and **every request still generating at `c`**, re-issue prompt + its own BF16
+   prefix (the first `c` generated tokens) and decode the rest under uniform W4 with
+   `max_tokens = cap - c` (`tail_w4_calibration.py:139 plan_continuations`, engine at `:302
+   VllmEngine`, trace writer at `:204`). Cost is Σ(1 − q) ≈ 0.88 continuations per request, one
+   batch. Long requests appear in every group, by design.
+4. The continuation trace becomes one **`W4Group` per cut** (`calibration.py:47 W4Group`;
+   `calibration.py:129 grouped_traces`): a hazard table built with *delayed entry* at the cut
+   (`hazard.py:67 components(entries=cut, finals)` — bins below the cut stay unobserved), so the
+   group is exactly "given BF16 up to `c`, the W4 continuation". The uniform-W4 trace, if given
+   (`--w4-trace`), is kept as the cut-0 group.
+5. **Routing**: a candidate switch at `F` is priced with the group whose cut is the largest ≤ `F`
+   (`calibration.py:72 w4_group_for`; used by `policy_builder.py:65 _w4_tables_by_frontier`, which
+   maps every frontier to its group's table before the search at `:102-103`). A single group with
+   cut 0 reproduces the legacy behaviour exactly, so the old traces still work.
+
+## 3. Difference 2 — both lines are updated online with the same weighted EMA
+
+### 3.1 The update rule (`hazard.py:113 weighted_update`)
+
+A cohort of `n` new requests is turned into a fraction table (`hazard.py:67 components`) and blended
+into the current table on the bins it observed:
+
+```
+w     = max( n / (prior_weight + n_seen + n), alpha_min )        # hazard.py:134
+table = (1 - w) * old + w * new                                   # on observed bins only, hazard.py:99 ema_update
+```
+
+`prior_weight` = how many online requests the calibration is worth (64 in the b32c24 runs;
+`--prior-weight`), `n_seen` = online requests already blended into that table, `alpha_min` = 0.05
+floor so the table keeps tracking drift. The weight starts near `n/64` and decays — a 4-request
+cohort after 200 requests moves a bin by ~2%, not by a fixed 20% (the old fixed-α rule,
+`--update ema`, let one cohort flip the table). One rule, applied per rollout to each line:
+
+### 3.2 W4 groups (`online_ema.py:73 replay_cohorts`)
+
+vLLM appends one `switch_cohort` row per rollout to `switch_observations.jsonl` (request ids and
+`entry_output_tokens` at the switch). When the rollout completes (all `B` requests finished,
+`traces.py:98 completed_steps`), the cohort's `(entry, final length)` pairs
+(`traces.py:123 cohort_observation`) are routed to the group with the largest cut ≤ the cohort's
+median entry (`online_ema.py:104-105`), built with delayed entry (`:106 components(entries, finals)`)
+and blended (`:108-110 weighted_update`). So the group that priced the switch is the one that learns
+from it.
+
+### 3.3 BF16 line (`online_ema.py:133 replay_bf16`, opt-in `--bf16-online`)
+
+Every completed rollout is a cohort of `B` BF16 requests, all with entry 0:
+
+* a request that finished under BF16 → event at its length (unless it hit the cap);
+* a request that switched at `e` → **censored at `e`**: at risk in every bin below `e`, then out of
+  the risk set without an event (`online_ema.py:168-170`: `exits = min(final, e)`,
+  `components(..., events=~switched)`; the `events` mask is the one extension made to
+  `components`, `hazard.py:67-80`).
+
+Then the same `weighted_update` with the same prior (`online_ema.py:171`;
+`--bf16-prior-weight` defaults to `--prior-weight`). The watcher refreshes both lines in
+`online_ema.py:231 observe` and rebuilds the policy in `:265 poll`, with hysteresis
+(`policy_builder.py:125 limit_decision_step`, ≤ `--max-step-tokens` = 2000 per revision per cell).
+
+### 3.4 Why the BF16 line was added, and its known failure mode
+
+Replaying the 2026-09-19 W4-only arms (`b32c24_*_ema_tailw4_p64`) showed the W4 groups learning
+correctly while the BF16 line stayed at its step-0 calibration. On Phi that calibration said 2151
+tokens remain from 1750 while the trained policy had ~1600, so the table kept saying "switch at
+1750" against a learned W4 tail of 2100 (ratio 1.27 in reality, 0.92 in the table). Updating only
+one half of the comparison can make it worse than updating neither.
+
+The asymmetry that remains is in the **data**, not the rule: a switch gives the W4 group a complete
+tail, but it removes every BF16 observation beyond `F` (those requests became W4). The BF16 line
+therefore learns the current policy below the switch point and keeps the stale calibration above it.
+Two consequences, both observed:
+
+* W4-only (BF16 frozen): stuck late when the policy shortens (Phi 0.93x).
+* Both lines, censored data only (`b32c24_phi4_mini_reasoning_ema_both_p64`, 2026-09-21): tracked
+  the truth through rollout 20, then — as Phi's responses shortened — the W4 groups followed, the
+  BF16 tail beyond the switch could not, the ratio flipped to 0.77 and the run locked into switching
+  everyone at 750 (12–29 live). 0.957x, better than W4-only, wrong mechanism.
+
+Mitigation in the code: `--bf16-probe-every K` (`online_ema.py:301-308`) publishes an all-zero
+(never-switch) table every K-th revision so that rollout is pure BF16 and its `B` requests are
+uncensored tail evidence (marked `policy["calibration"]["bf16_probe"]`); cost 1/K of the rollouts
+without the W4 gain. A cheaper variant replayed but not implemented: switch at `F + 2000` instead
+of never on the exploration rollout (observes the bins that decide "switch or wait", keeps the
+gain beyond). The CPU replays are in the session scratchpads (`replay_bf16*.py`, `unified.py`,
+`bf16_ema.py`).
+
+## 4. Things that are *not* in the model (checked, so nobody re-derives them)
+
+* **Batch size does not move the switch point.** Saving and cost of a switch both scale with the
+  live count, so `argmin_F` depends only on the two lines and the per-step INT4 saving, which is
+  flat across batch on Qwen (weight-read bound: ~4 ms 9B, ~2.5 ms 4B, ~1.7 ms Phi ≤ 16 live). The
+  decision tables are one number per model across live 1..32 (9B 8000, 4B 3750, Phi 1750).
+* **No forgetting factor.** Plain accumulation (weight → `n/N`) reproduced the decisions of the
+  weighted rule in replay; a discount γ = 0.9 only added noise at 48 rollouts.
+* **No proportional/head-to-tail extrapolation for the BF16 line.** Under training the middle and
+  the tail of the length distribution move in opposite directions on all three models; scaling the
+  calibration tail by the observed/expected ratio below `F` moved it the wrong way.
+
+## 5. Knobs (all in `cli.py watch-ema`, exported by `recipes/continuous_ema.sh`)
+
+| knob | default | env in recipe |
+|---|---|---|
+| `--update weighted\|ema` | weighted | `EMA_UPDATE` |
+| `--prior-weight` | 32 (runs: 64) | `EMA_PRIOR_WEIGHT` |
+| `--alpha-min` | 0.05 | `EMA_ALPHA_MIN` |
+| `--max-step-tokens` | 2000 | `EMA_MAX_STEP_TOKENS` |
+| `--w4-cont-trace` / `--w4-trace` | one required | `W4_CONT_TRACE` / `W4_TRACE` |
+| `--bf16-online` | off | `EMA_BF16_ONLINE=1` |
+| `--bf16-prior-weight` | = prior-weight | `EMA_BF16_PRIOR_WEIGHT` |
+| `--bf16-probe-every` | 0 | `EMA_BF16_PROBE_EVERY` |
+
+Run directories for the evidence: `/data/huanchen/ps_runs/b32c24_<model>_{ema_tailw4_p64,
+ema_both_p64, ema_both_p64_probe4, ema_both_p64_seed43}`; calibration traces
+`b32c24_<model>_calib_{bf16,full_w4,tailw4}`; per-revision watcher state in
+`online_ema_history.jsonl`, switch cohorts in `switch_observations.jsonl`, request lifetimes in
+`traces/request_lifetimes_replica000_node000.jsonl`. The watcher is deterministic given those
+files, so any revision's tables can be rebuilt on CPU with `replay_cohorts` / `replay_bf16`.
