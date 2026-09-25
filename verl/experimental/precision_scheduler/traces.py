@@ -153,6 +153,18 @@ def cohort_observation(
     return entries, finals, skipped
 
 
+def cohort_frontier(cohort: dict[str, Any], entries: np.ndarray) -> int:
+    """The response frontier a cohort was switched at, for routing it to a W4 group.
+
+    This is the trigger's ``applied_response_tokens``: the frontier whose W4 group priced the switch.
+    Per-request entries trail it by a few tokens, so their median can sit just below that group's cut
+    (2748 against 2750) and would route the cohort to the next lower group, leaving the group that
+    priced the decision without its observations.  Cohorts without a trigger fall back to the median.
+    """
+    applied = (cohort.get("trigger") or {}).get("applied_response_tokens")
+    return int(applied) if applied is not None else int(np.median(entries))
+
+
 def read_metrics(paths: list[Path]) -> list[dict[str, Any]]:
     """Metric rows (``step`` + ``data``) from one or more rl_workflow_timing JSONL files."""
     rows = []

@@ -195,6 +195,35 @@ def test_weighted_update_resists_a_small_cohort_and_replay_routes_groups():
     assert not out[1].table.observed[GRID.frontier_index(1500)]
 
 
+def test_cohorts_route_to_the_group_that_priced_the_switch():
+    """Entries trail the applied frontier by a few tokens; routing by their median (2748) would feed
+    the cut-0 group while the cut-2750 group priced the switch."""
+    from verl.experimental.precision_scheduler.online_ema import replay_clock
+
+    grid = PolicyGrid(step=250, cap=4096, batch=4, prompt_step=128, prompt_max=0)
+    rng = np.random.default_rng(1)
+    cal = from_finals(list(rng.integers(600, 3000, 64)), list(rng.integers(700, 3200, 64)), grid)
+    cal = InitialCalibration(cal.bf16, cal.w4, cal.metadata,
+                             [W4Group(0, cal.w4, 64), W4Group(2750, cal.w4, 64)])
+    requests = [{"request_id": f"r{i}-deadbeef", "entry_output_tokens": e}
+                for i, e in enumerate([2746, 2748, 2748])]
+    switched = {"event": "switch_cohort", "rollout_index": 1, "requests": requests,
+                "trigger": {"applied_response_tokens": 2750, "committed_frontier": 2750}}
+    legacy = {k: v for k, v in switched.items() if k != "trigger"}
+    starts = [{"request_id": f"r{i}"} for i in range(4)]
+    finishes = {f"r{i}": 3900 for i in range(3)} | {"r3": 800}
+
+    _, processed = replay_cohorts(cal.w4_groups, [switched], finishes, grid, 0.2, update="weighted", prior_weight=8)
+    assert processed[0]["group_cut"] == 2750
+    _, processed = replay_cohorts(cal.w4_groups, [legacy], finishes, grid, 0.2, update="weighted", prior_weight=8)
+    assert processed[0]["group_cut"] == 0
+
+    _, _, info = replay_clock(cal, starts, finishes, [switched], grid, prior_weight=4.0)
+    assert info["a_w4"][2750] < 1.0 and info["a_w4"][0] == 1.0
+    _, _, info = replay_clock(cal, starts, finishes, [legacy], grid, prior_weight=4.0)
+    assert info["a_w4"][2750] == 1.0 and info["a_w4"][0] < 1.0
+
+
 def test_limit_decision_step():
     prev = np.array([[[5000, 5000, 0]]])
     new = np.array([[[16000, 4000, 9000]]])

@@ -69,7 +69,14 @@ from .calibration import InitialCalibration, W4Group, w4_group_for
 from .cost_model import PolicyGrid, TpotSource, make_tpot_cache
 from .hazard import HazardTable, components, ema_update, weighted_update
 from .policy_builder import build_policy, decisions_array, limit_decision_step, write_policy_atomic
-from .traces import cohort_observation, completed_steps, read_cohorts, resolve_request_id, trace_lengths
+from .traces import (
+    cohort_frontier,
+    cohort_observation,
+    completed_steps,
+    read_cohorts,
+    resolve_request_id,
+    trace_lengths,
+)
 
 DEFAULT_TRACE = "traces/request_lifetimes_replica000_node000.jsonl"
 DEFAULT_COHORTS = "switch_observations.jsonl"
@@ -90,7 +97,8 @@ def replay_cohorts(
     """Re-apply switch cohorts (in file order) to ``base``; returns the updated table(s) and a processing log.
 
     ``base`` may be one W4 table (legacy) or the calibration's W4 groups; with groups each cohort is
-    routed to the group whose cut is the largest at or below the cohort's median entry frontier.
+    routed to the group whose cut is the largest at or below the frontier it was switched at
+    (:func:`~.traces.cohort_frontier`), i.e. the group that priced the switch.
     ``update="weighted"`` uses :func:`weighted_update` with per-group online request counts,
     ``"ema"`` the fixed-``alpha`` blend.
     """
@@ -106,8 +114,8 @@ def replay_cohorts(
         if observation is None:
             continue
         entries, finals, skipped = observation
-        entry = int(np.median(entries))
-        gi = groups.index(w4_group_for(groups, entry)) if grouped else 0
+        frontier = cohort_frontier(cohort, entries)
+        gi = groups.index(w4_group_for(groups, frontier)) if grouped else 0
         new = components(entries, finals, grid)
         if update == "weighted":
             table, weight = weighted_update(
@@ -127,6 +135,7 @@ def replay_cohorts(
                 "entry_tokens_mean": float(np.mean(entries)),
                 "final_tokens_mean": float(np.mean(finals)),
                 "cap_requests": int(np.sum(finals >= grid.cap)),
+                "switch_frontier": int(frontier),
                 "group_cut": int(groups[gi].cut),
                 "weight": float(weight),
                 "group_seen": int(seen[gi]),
@@ -266,7 +275,7 @@ def replay_clock(
             if obs is None:
                 continue
             ent, fin, _ = obs
-            cut = w4_group_for(groups, int(np.median(ent))).cut
+            cut = w4_group_for(groups, cohort_frontier(cohort, ent)).cut
             H, x = Hg[cut]
             dg[cut] += float(np.sum(fin < grid.cap))
             eg[cut] += float(sum(np.interp(f, x, H) - np.interp(max(s, x[0]), x, H) for s, f in zip(ent, fin)))

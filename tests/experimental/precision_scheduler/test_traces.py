@@ -21,6 +21,7 @@ import pytest
 from verl.experimental.precision_scheduler.calibration import paired_traces
 from verl.experimental.precision_scheduler.cost_model import PolicyGrid
 from verl.experimental.precision_scheduler.traces import (
+    cohort_frontier,
     cohort_observation,
     completed_steps,
     final_lengths,
@@ -107,6 +108,14 @@ def test_cohort_observation_and_read_cohorts(tmp_path):
     write_lines(path, [cohort, {"event": "other"}, cohort])
     assert len(read_cohorts(path)) == 2
     assert read_cohorts(tmp_path / "missing.jsonl") == []
+
+
+def test_cohort_frontier_is_the_applied_switch_not_the_median_entry():
+    entries = np.array([2746, 2748, 2748])
+    triggered = {"trigger": {"applied_response_tokens": 2750, "committed_frontier": 2750}}
+    assert cohort_frontier(triggered, entries) == 2750
+    assert cohort_frontier({}, entries) == 2748  # no trigger: fall back to the median entry
+    assert cohort_frontier({"trigger": {}}, entries) == 2748
 
 
 def test_paired_trace_calibration(tmp_path):
