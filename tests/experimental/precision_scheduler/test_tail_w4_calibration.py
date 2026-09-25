@@ -15,6 +15,7 @@
 and the hysteresis guard.  No engine: the continuation run uses a fake engine."""
 
 import json
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -167,6 +168,38 @@ def test_groups_change_the_decision_where_the_tail_differs():
     # count; the legacy table, which only knows the heavy from-scratch population, decides differently
     assert (d_groups[0, 0, :] == cut).all()
     assert not np.array_equal(d_heavy[0, 0, :], d_groups[0, 0, :])
+
+
+def test_switch_floor_keeps_candidates_at_or_above_the_first_tail_cut():
+    """Below the first tail cut a switch is priced by the uniform-W4 group; the floor removes that region."""
+    from verl.experimental.precision_scheduler.online_ema import OnlineEmaWatcher
+
+    rng = np.random.default_rng(3)
+    bf = rng.integers(200, CAP, 200)
+    cut = 2000
+    alive = bf[bf >= cut]
+    short = np.minimum(CAP, (bf * 0.6).astype(int) + 50)      # uniform W4 looks cheap from the first token
+    long_tail = np.minimum(CAP, cut + ((alive - cut) * 2.0).astype(int))   # a BF16 prefix then W4 runs long
+    cal = from_finals(bf, short, GRID)
+    groups = [W4Group(0, cal.w4, len(short)), W4Group(cut, components(np.full(len(long_tail), cut), long_tail, GRID), len(long_tail))]
+    tpot = {"bf16": np.full((len(GRID.frontiers), 1, GRID.batch), 14.0), "w4": np.full((len(GRID.frontiers), 1, GRID.batch), 10.0)}
+    free = build_decisions(cal.bf16, groups, tpot, GRID, 0.0009)
+    floored = build_decisions(cal.bf16, groups, tpot, GRID, 0.0009, min_switch_frontier=cut)
+    start = free[0, 0, :]
+    assert ((start > 0) & (start < cut)).any()                   # unfloored: escapes below the first tail cut
+    assert ((floored == 0) | (floored >= cut)).all()             # floored: never below it, from any state
+    above = GRID.frontier_index(cut)
+    np.testing.assert_array_equal(floored[above:], free[above:])   # states past the floor are unchanged
+    # the watcher floors at the first tail cut by default and can be told not to
+    from verl.experimental.precision_scheduler.tpot_grid import TpotGrid
+    grid_tpot = TpotGrid([1, 8], [512, 4096], np.full((2, 2), 14.0), np.full((2, 2), 10.0))
+    grouped = InitialCalibration(cal.bf16, cal.w4, cal.metadata, groups)
+    w = OnlineEmaWatcher(run_dir=Path("/nonexistent"), policy_path=Path("/nonexistent/p.json"), calibration=grouped,
+                         tpot=grid_tpot, grid=GRID, alpha=0.2, slope=0.0009, steps=1, update="clock")
+    assert w.min_switch_frontier == cut
+    w0 = OnlineEmaWatcher(run_dir=Path("/nonexistent"), policy_path=Path("/nonexistent/p.json"), calibration=grouped,
+                          tpot=grid_tpot, grid=GRID, alpha=0.2, slope=0.0009, steps=1, update="clock", min_switch_frontier=0)
+    assert w0.min_switch_frontier == 0
 
 
 def test_weighted_update_resists_a_small_cohort_and_replay_routes_groups():

@@ -81,6 +81,7 @@ def build_decisions(
     grid: PolicyGrid,
     slope: float,
     w4_token_penalty: float = 0.0,
+    min_switch_frontier: int = 0,
 ) -> np.ndarray:
     """Dense committed-frontier table ``[frontier, prompt bucket, live]`` (0 = never switch).
 
@@ -95,10 +96,17 @@ def build_decisions(
     few percent from ~1K to ~8K tokens on Qwen3.5-9B) while uniform W4 costs several reward
     points, and this term moves the committed frontier to the late edge of that band. ``0``
     reproduces the original cost-only search.
+
+    ``min_switch_frontier`` (default 0) removes candidate switch frontiers below it. With tail-W4 groups the
+    calibration has no BF16-prefix continuation below the first tail cut: a switch there is priced by the
+    uniform-W4 group (W4 from the first token), a different process, and once the first tail group learns that
+    its continuations run long the search escapes to that unpriced region (Qwen3.5-4B, 2026-09-25: every rollout
+    from 16 on switched at 2250 with the first cut at 2750). The watcher floors candidates at the first tail cut.
     """
     if w4_token_penalty < 0:
         raise ValueError("w4_token_penalty must be >= 0")
     frontiers = grid.frontiers
+    first_candidate = int(np.searchsorted(frontiers, int(min_switch_frontier)))
     tables = _w4_tables_by_frontier(w4, grid)
     w4_survivals = [survival(tables[k], k) for k in range(len(frontiers))]
     decisions = np.zeros(grid.shape, dtype=np.int64)
@@ -108,7 +116,7 @@ def build_decisions(
         stay = trajectory_cost_grid(cache, grid, "bf16", fi, bf_alive, slope)
         best_cost = np.full_like(stay, np.inf)
         best_frontier = np.zeros_like(decisions[fi])
-        for future_fi in range(fi, len(frontiers)):
+        for future_fi in range(max(fi, first_candidate), len(frontiers)):
             prefix_bins = future_fi - fi
             prefix = trajectory_cost_grid(cache, grid, "bf16", fi, bf_alive[:prefix_bins], slope)
             reach = float(bf_alive[prefix_bins])
@@ -205,11 +213,13 @@ def build_policy(
     extra_calibration: dict[str, Any] | None = None,
     w4_token_penalty: float = 0.0,
     unconditional: bool = False,
+    min_switch_frontier: int = 0,
 ) -> tuple[dict[str, Any], int]:
     """Run the global search and return ``(policy_json, switch_states)``."""
     if cache is None:
         cache = make_tpot_cache(grid, tpot)
-    decisions = build_decisions(bf, w4, cache, grid, slope, w4_token_penalty=w4_token_penalty)
+    decisions = build_decisions(bf, w4, cache, grid, slope, w4_token_penalty=w4_token_penalty,
+                                min_switch_frontier=min_switch_frontier)
     if unconditional:
         # ablation: the switch frontier chosen at the rollout start for the full batch is used in every cell, i.e. no
         # re-conditioning of the survival lines on the current frontier or live count
@@ -227,6 +237,7 @@ def build_policy(
     policy = policy_from_decisions(decisions, grid, description=description, calibration=calibration, slope=slope)
     policy["offline_cost_model"]["w4_token_penalty_seconds"] = float(w4_token_penalty)
     policy["offline_cost_model"]["unconditional"] = bool(unconditional)
+    policy["offline_cost_model"]["min_switch_frontier"] = int(min_switch_frontier)
     return policy, int(np.count_nonzero(decisions))
 
 

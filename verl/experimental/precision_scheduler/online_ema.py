@@ -344,6 +344,7 @@ class OnlineEmaWatcher:
         rho: float = 0.9,
         unconditional: bool = False,
         w4_share_tokens: float = 0.0,
+        min_switch_frontier: int | None = None,
     ) -> None:
         self.run_dir = Path(run_dir)
         self.policy_path = Path(policy_path)
@@ -376,6 +377,10 @@ class OnlineEmaWatcher:
         self.rho = float(rho)
         self.unconditional = bool(unconditional)
         self.w4_share_tokens = float(w4_share_tokens)
+        # None: floor candidate switches at the first tail-W4 cut (see policy_builder.build_decisions); 0: no floor
+        tail_cuts = [g.cut for g in calibration.w4_groups if g.cut > 0]
+        self.min_switch_frontier = (min(tail_cuts) if tail_cuts else 0) if min_switch_frontier is None \
+            else int(min_switch_frontier)
         if self.update == "clock":
             self.bf16_online = True  # the clock learns both lines by construction
 
@@ -453,11 +458,13 @@ class OnlineEmaWatcher:
                 "bf16_probe_every": self.bf16_probe_every,
                 "rho": self.rho,
                 "w4_share_tokens": self.w4_share_tokens,
+                "min_switch_frontier": self.min_switch_frontier,
                 "bf16_online_requests": self._bf16_stats,
                 "w4_groups": [{"cut": g.cut, "requests": g.requests} for g in self.calibration.w4_groups],
             },
             w4_token_penalty=self.w4_token_penalty,
             unconditional=self.unconditional,
+            min_switch_frontier=self.min_switch_frontier,
         )
         decisions = decisions_array(policy)
         limited = limit_decision_step(self._previous_decisions, decisions, self.max_step_tokens)
