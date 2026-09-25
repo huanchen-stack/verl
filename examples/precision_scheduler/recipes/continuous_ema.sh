@@ -57,7 +57,7 @@ else
     --batch "${batch}" --cap "${cap}" --run-dir "${RUN_DIR}" --policy "${policy_path}" --steps "${steps}"
     --bf-trace "${BF_TRACE}" --heatmap "${HEATMAP}"
     --update "${EMA_UPDATE:-weighted}" --alpha "${EMA_ALPHA:-0.2}" --prior-weight "${EMA_PRIOR_WEIGHT:-32}"
-    --alpha-min "${EMA_ALPHA_MIN:-0.05}" --max-step-tokens "${EMA_MAX_STEP_TOKENS:-2000}" --rho "${EMA_RHO:-0.9}"
+    --alpha-min "${EMA_ALPHA_MIN:-0.05}" --max-step-tokens "${EMA_MAX_STEP_TOKENS:-2000}" --rho "${EMA_RHO:-0.9}" --w4-share-tokens "${EMA_W4_SHARE_TOKENS:-0}"
     --downstream-slope "${DOWNSTREAM_SLOPE:-0}")
   # Online BF16 line (same weighted update as the W4 groups; off by default, see online_ema.py caveat).
   [[ "${EMA_BF16_ONLINE:-0}" == "1" ]] && watcher+=(--bf16-online)

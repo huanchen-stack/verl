@@ -224,6 +224,37 @@ def test_cohorts_route_to_the_group_that_priced_the_switch():
     assert info["a_w4"][2750] == 1.0 and info["a_w4"][0] < 1.0
 
 
+def test_w4_sharing_pools_intensity_across_nearby_cuts_with_delayed_entry():
+    from verl.experimental.precision_scheduler.online_ema import replay_clock, w4_share_weights
+
+    grid = PolicyGrid(step=250, cap=8192, batch=4, prompt_step=128, prompt_max=0)
+    rng = np.random.default_rng(2)
+    cal = from_finals(list(rng.integers(600, 7000, 64)), list(rng.integers(700, 7500, 64)), grid)
+    cuts = [0, 2750, 5000, 6250]
+    cal = InitialCalibration(cal.bf16, cal.w4, cal.metadata, [W4Group(c, cal.w4, 64) for c in cuts])
+    assert w4_share_weights(cal.w4_groups, 4750, 0) == [(2750, 1.0)]
+    assert w4_share_weights(cal.w4_groups, 4750, 1000) == [(2750, 1.0), (5000, pytest.approx(0.75))]
+    assert w4_share_weights(cal.w4_groups, 2750, 1000) == [(2750, 1.0)]  # cut 0 is 2750 away
+
+    def cohort(finals):
+        requests = [{"request_id": f"r{i}-deadbeef", "entry_output_tokens": 4750} for i in range(len(finals))]
+        finishes = {f"r{i}": f for i, f in enumerate(finals)} | {f"r{i}": 900 for i in range(len(finals), 4)}
+        return {"event": "switch_cohort", "rollout_index": 1, "requests": requests,
+                "trigger": {"applied_response_tokens": 4750}}, finishes
+
+    starts = [{"request_id": f"r{i}"} for i in range(4)]
+    long_tail, finishes = cohort([8000, 8000, 7900])
+    _, _, off = replay_clock(cal, starts, finishes, [long_tail], grid, prior_weight=4.0)
+    _, _, on = replay_clock(cal, starts, finishes, [long_tail], grid, prior_weight=4.0, w4_share_tokens=1000)
+    assert off["a_w4"][2750] < 1.0 and off["a_w4"][5000] == 1.0
+    assert on["a_w4"][2750] == pytest.approx(off["a_w4"][2750])  # the pricing group is unchanged by sharing
+    assert on["a_w4"][5000] < 1.0 and on["a_w4"][6250] == 1.0 and on["a_w4"][0] == 1.0
+    # requests that ended before 5000 are not in the 5000 group's risk set: no events, no exposure
+    ended_early, finishes = cohort([4800, 4900, 4950])
+    _, _, early = replay_clock(cal, starts, finishes, [ended_early], grid, prior_weight=4.0, w4_share_tokens=1000)
+    assert early["a_w4"][2750] > 1.0 and early["a_w4"][5000] == 1.0
+
+
 def test_limit_decision_step():
     prev = np.array([[[5000, 5000, 0]]])
     new = np.array([[[16000, 4000, 9000]]])

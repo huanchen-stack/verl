@@ -167,7 +167,43 @@ Results, B32 / cap 24k, steps 9-48 vs pooled BF16 (run dirs `b32c24_<model>_cloc
 slightly below on step (inside the CIs) and below fixed 7000: it switches earlier (3250-5500 with 7-12 live) and
 pays 13-17% tokens; its W4 group parameters did learn the inflation (a_1750 0.7, a_4250 0.75-0.84) but the cost
 model still preferred the early switch -- the remaining 9B question is the price of tokens in the cost model, not
-the estimator.
+the estimator. (But see 3.6: until 2026-09-25 the group pricing a switch often did not receive that switch's
+cohort, and the held-out W4 level on this 9B run was 31.5% low.)
+
+### 3.6 Cohort routing and neighbour sharing (2026-09-25)
+
+**Routing fix.** `replay_clock` and `replay_cohorts` used to route a switch cohort by the median of its
+requests' `entry_output_tokens`. Those trail the applied frontier by a few tokens (a switch at 2750 records
+2746-2750), so a median of 2748 went to the next lower group while the cut-2750 group priced the switch:
+the pricing group did not learn from its own decisions. On the 4B clock_p64 seed-42 run only 2 of the first 14
+cohorts reached the 2750 group; the replayed estimate there sat on the calibration and jumped only when a
+median happened to equal the cut. Cohorts are now routed by `trigger.applied_response_tokens`
+(`traces.cohort_frontier`; cohorts without a trigger keep the median).
+
+**Neighbour sharing (`--w4-share-tokens`, default 0 = off).** A cohort also informs groups whose cut is within
+that many tokens of its switch, weight `1 - |F - cut| / share`, with delayed entry at the neighbour's cut. Only
+the intensity evidence is pooled; each group keeps its calibration shape.
+
+Held-out evaluation on the existing clock_p64 traces (every rollout priced by revision r-1, same trajectories
+for all variants; `examples/precision_scheduler/analysis/eval_cohort_routing.py`, old numbers from the
+pre-fix commit's tree): pooled expected tokens after the
+switch vs realized --
+
+| run | realized | old routing | fixed | share 1000 | share 2000 |
+|---|---:|---:|---:|---:|---:|
+| 4B s42 / s43 / s44 / s45 | 6207 / 6142 / 6830 / 7044 | -16.8 / -12.2 / -15.8 / -16.5% | -8.8 / -8.1 / -10.5 / -14.7% | -7.5 / -6.3 / -9.6 / -12.2% | -7.5 / -6.1 / -8.3 / -10.7% |
+| 9B | 7757 | -31.5% | -26.3% | -25.4% | -18.4% |
+| Phi-mini 24K | 1232 | -17.1% | -0.9% | +15.6% | +19.7% |
+| Phi-mini 4K | 817 | -37.9% | -13.9% | -14.7% | -15.1% |
+| Phi-4 14B | 1012 | +17.2% | +37.5% | +48.4% | +50.6% |
+
+The fix moves the level (what the switch decision prices) toward the realized value on 7 of 8 runs. Per-request
+log-likelihood of the continuation is unchanged on 4B (|diff| < 0.005, CIs span 0), n.s. positive on 9B and
+Phi-mini 4K, and lower on Phi-mini 24K (-0.037) and Phi-4 14B (-0.028). Phi-4 14B is a model-class limit, not a
+routing one: at its usual frontier 500 the calibration predicts 1412 more tokens, the runs realize 823 (median
+256), and one intensity parameter cannot close a shape gap that size. Sharing keeps shrinking the 4B/9B
+under-estimate but overshoots on both Phi models, so it stays off. The 9B early-switch question should be
+re-measured with the fix before it is attributed to the token price alone.
 
 ## 4. Things that are *not* in the model (checked, so nobody re-derives them)
 
@@ -193,6 +229,8 @@ the estimator.
 | `--bf16-online` | off | `EMA_BF16_ONLINE=1` |
 | `--bf16-prior-weight` | = prior-weight | `EMA_BF16_PRIOR_WEIGHT` |
 | `--bf16-probe-every` | 0 | `EMA_BF16_PROBE_EVERY` |
+| `--rho` (clock) | 0.9 | `EMA_RHO` |
+| `--w4-share-tokens` (clock) | 0 (off) | `EMA_W4_SHARE_TOKENS` |
 
 Run directories for the evidence: `/data/huanchen/ps_runs/b32c24_<model>_{ema_tailw4_p64,
 ema_both_p64, ema_both_p64_probe4, ema_both_p64_seed43}`; calibration traces

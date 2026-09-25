@@ -38,7 +38,9 @@ Update rules (``update``):
   each line learns one termination-intensity parameter from a censored likelihood (BF16 from every request,
   censored at its switch; each W4 group from the requests switched into it, exposure from the switch
   position), discounted by ``rho`` per rollout.  No bin can be rewritten by a handful of requests, and the
-  frozen tables are the special case ``a = 1``.  Turns the BF16 line on.
+  frozen tables are the special case ``a = 1``.  Turns the BF16 line on.  With ``w4_share_tokens > 0`` a
+  cohort also informs the W4 groups whose cuts lie within that many tokens of its switch frontier, with a
+  triangular weight (:func:`w4_share_weights`), pooling the intensity parameter across neighbouring cuts.
 
 Hysteresis: ``max_step_tokens`` limits how far each committed frontier may move per revision.
 
@@ -210,6 +212,26 @@ def _powered_table(table: HazardTable, start: int, a: float, grid: PolicyGrid) -
     return HazardTable(risk=risk, event=event, observed=observed)
 
 
+def w4_share_weights(groups: list[W4Group], frontier: int, share_tokens: float) -> list[tuple[int, float]]:
+    """``(cut, weight)`` pairs a switch cohort at ``frontier`` contributes to.
+
+    The group that priced the switch (:func:`~.calibration.w4_group_for`) always gets weight 1.  With
+    ``share_tokens > 0`` every other group gets ``1 - |frontier - cut| / share_tokens`` when positive, the
+    distance being measured to the cut where that group's continuation curve starts.  Only the intensity
+    evidence is pooled; each group keeps its own calibration shape.  ``share_tokens <= 0`` routes to the
+    pricing group alone.
+    """
+    own = w4_group_for(groups, frontier).cut
+    weights = [(own, 1.0)]
+    if share_tokens > 0:
+        for group in groups:
+            if group.cut != own:
+                weight = 1.0 - abs(frontier - group.cut) / share_tokens
+                if weight > 0:
+                    weights.append((group.cut, weight))
+    return weights
+
+
 def replay_clock(
     calibration: InitialCalibration,
     starts: list[dict[str, Any]],
@@ -220,6 +242,7 @@ def replay_clock(
     completed: int | None = None,
     prior_weight: float = 64.0,
     rho: float = 0.9,
+    w4_share_tokens: float = 0.0,
 ) -> tuple[HazardTable, list[W4Group], dict[str, Any]]:
     """Shared survival clock on both lines: the calibration curves keep their shape, each line learns one
     termination-intensity parameter ``a`` (``S_t = S_0^a``; a>1 = shorter responses) from a censored
@@ -229,6 +252,10 @@ def replay_clock(
 
     BF16: one ``a`` over the whole run (kappa = prior_weight).  W4: one ``a_g`` per continuation group,
     exposure measured from the switch position ``H_g(y) - H_g(s)`` (kappa_g = prior_weight * group size / 256).
+    A cohort updates the group that priced its switch with weight 1 and, with ``w4_share_tokens > 0``, nearby
+    groups with the weights of :func:`w4_share_weights`; a group whose cut lies after a request's entry
+    observes it from that cut on (delayed entry), and a request that ended before a group's start is not in
+    that group's risk set.
     Frozen tables are the special case ``a = 1``.  Returns the two lines as hazard tables plus the parameters.
     """
     frontiers = grid.frontiers
@@ -275,10 +302,12 @@ def replay_clock(
             if obs is None:
                 continue
             ent, fin, _ = obs
-            cut = w4_group_for(groups, cohort_frontier(cohort, ent)).cut
-            H, x = Hg[cut]
-            dg[cut] += float(np.sum(fin < grid.cap))
-            eg[cut] += float(sum(np.interp(f, x, H) - np.interp(max(s, x[0]), x, H) for s, f in zip(ent, fin)))
+            for cut, weight in w4_share_weights(groups, cohort_frontier(cohort, ent), w4_share_tokens):
+                H, x = Hg[cut]
+                begin = np.maximum(ent, x[0])
+                risk = fin >= begin
+                dg[cut] += weight * float(np.sum(risk & (fin < grid.cap)))
+                eg[cut] += weight * float(np.sum(np.interp(fin[risk], x, H) - np.interp(begin[risk], x, H)))
     a16 = (kappa16 + d16) / (kappa16 + e16) if e16 > 0 else 1.0
     ag = {cut: ((kg[cut] + dg[cut]) / (kg[cut] + eg[cut]) if eg[cut] > 0 else 1.0) for cut in dg}
     bf16 = _powered_table(calibration.bf16, 0, a16, grid)
@@ -314,6 +343,7 @@ class OnlineEmaWatcher:
         bf16_probe_every: int = 0,
         rho: float = 0.9,
         unconditional: bool = False,
+        w4_share_tokens: float = 0.0,
     ) -> None:
         self.run_dir = Path(run_dir)
         self.policy_path = Path(policy_path)
@@ -345,6 +375,7 @@ class OnlineEmaWatcher:
         self._bf16_stats: dict[str, Any] = {}
         self.rho = float(rho)
         self.unconditional = bool(unconditional)
+        self.w4_share_tokens = float(w4_share_tokens)
         if self.update == "clock":
             self.bf16_online = True  # the clock learns both lines by construction
 
@@ -361,6 +392,7 @@ class OnlineEmaWatcher:
             self.bf16_table, groups, info = replay_clock(
                 self.calibration, starts, finishes, used, self.grid,
                 completed=complete if self.gate else None, prior_weight=self.prior_weight, rho=self.rho,
+                w4_share_tokens=self.w4_share_tokens,
             )
             self._bf16_stats = info
             processed = [{"rollout_index": int(c.get("rollout_index", 0)), "requests": len(c.get("requests", []))} for c in used]
@@ -420,6 +452,7 @@ class OnlineEmaWatcher:
                 "bf16_prior_weight": self.bf16_prior_weight,
                 "bf16_probe_every": self.bf16_probe_every,
                 "rho": self.rho,
+                "w4_share_tokens": self.w4_share_tokens,
                 "bf16_online_requests": self._bf16_stats,
                 "w4_groups": [{"cut": g.cut, "requests": g.requests} for g in self.calibration.w4_groups],
             },

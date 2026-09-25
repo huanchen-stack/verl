@@ -64,6 +64,7 @@ def _add_calibration_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--alpha", type=float, default=0.2, help="fixed cohort weight for --update ema")
     parser.add_argument("--update", choices=("weighted", "ema", "clock"), default="weighted", help="online update rule")
     parser.add_argument("--rho", type=float, default=0.9, help="clock: discount of the accumulated events/exposure per rollout")
+    parser.add_argument("--w4-share-tokens", type=float, default=0.0, help="clock: a cohort also informs W4 groups whose cut is within this many tokens of its switch, with a triangular weight; 0 = pricing group only")
     parser.add_argument("--unconditional", action="store_true", help="ablation: use the rollout-start, full-batch switch frontier in every cell")
     parser.add_argument("--prior-weight", type=float, default=32.0, help="weighted: calibration worth this many requests")
     parser.add_argument("--alpha-min", type=float, default=0.05, help="weighted: floor of the cohort weight (drift)")
@@ -160,6 +161,7 @@ def cmd_watch_ema(args: argparse.Namespace) -> int:
         bf16_probe_every=args.bf16_probe_every,
         rho=args.rho,
         unconditional=args.unconditional,
+        w4_share_tokens=args.w4_share_tokens,
     )
     watcher.run(initialize_only=args.initialize_only, poll_interval=args.poll_interval)
     return 0
