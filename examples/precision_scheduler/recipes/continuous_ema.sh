@@ -13,9 +13,14 @@
 #           BF_TRACE=<bf16 baseline trace> W4_CONT_TRACE=<tail-W4 continuation trace> [W4_TRACE=<w4 baseline>] HEATMAP=<heatmap.json> \
 #           [DOWNSTREAM_SLOPE=0] [EMA_ALPHA=0.2] [RUNNER=rollout_only|full_step] recipes/continuous_ema.sh [overrides...]
 # INITIAL_BATCH is the single batch knob: the watcher gets --batch INITIAL_BATCH and both runners get
-# TRAIN_BATCH_SIZE = INITIAL_BATCH / ROLLOUT_N (ROLLOUT_N default 4; INITIAL_BATCH must be divisible). A
+# TRAIN_BATCH_SIZE = INITIAL_BATCH * DP_SIZE / ROLLOUT_N (ROLLOUT_N default 4; INITIAL_BATCH must be divisible). A
 # TRAIN_BATCH_SIZE that disagrees is refused (the watcher would count steps in a different cohort size
 # than the trainer submits).
+# DP_SIZE (default 1) runs DP_SIZE data-parallel trainer ranks and vLLM replicas on DP_SIZE GPUs: every
+# replica serves its own INITIAL_BATCH requests per step (verl assigns them round-robin), the watcher
+# counts steps and learns from replica 0's trace (other replicas' cohorts carry request ids it cannot
+# resolve and are skipped), and every replica reloads the same policy. trainer.balance_batch is turned
+# on so the trainer ranks split the tokens evenly.
 # The watcher is the C6 CLI `python -m verl.experimental.precision_scheduler.cli watch-ema`; WATCHER_CMD
 # overrides the whole command (tests use a stub), RUNNER_CMD overrides the runner command.
 # DRY_RUN=1 prints the watcher command line and the runner's override list without launching anything.
@@ -29,7 +34,9 @@ batch="${INITIAL_BATCH:-64}"
 rollout_n="${ROLLOUT_N:-4}"
 [[ "${batch}" =~ ^[0-9]+$ && "${rollout_n}" =~ ^[0-9]+$ && "${rollout_n}" -gt 0 ]] || ps_die "INITIAL_BATCH / ROLLOUT_N must be positive integers"
 (( batch % rollout_n == 0 )) || ps_die "INITIAL_BATCH=${batch} is not divisible by ROLLOUT_N=${rollout_n}"
-train_batch_size=$((batch / rollout_n))
+dp_size="${DP_SIZE:-1}"
+[[ "${dp_size}" =~ ^[0-9]+$ && "${dp_size}" -gt 0 ]] || ps_die "DP_SIZE must be a positive integer"
+train_batch_size=$((batch * dp_size / rollout_n))
 if [[ -n "${TRAIN_BATCH_SIZE:-}" && "${TRAIN_BATCH_SIZE}" != "${train_batch_size}" ]]; then
   ps_die "TRAIN_BATCH_SIZE=${TRAIN_BATCH_SIZE} disagrees with INITIAL_BATCH=${batch} / ROLLOUT_N=${rollout_n} = ${train_batch_size}"
 fi
@@ -70,8 +77,14 @@ runner_env=(RUN_DIR="${RUN_DIR}" INITIAL_BATCH="${batch}" TRAIN_BATCH_SIZE="${tr
 runner_overrides=(
   "${ps}.reload_policy_each_rollout=true"
   "${ps}.policy_barrier_timeout_s=${POLICY_BARRIER_TIMEOUT_S:-600}"
-  "$@"
 )
+if (( dp_size > 1 )); then
+  runner_overrides+=("trainer.n_gpus_per_node=${dp_size}" "trainer.balance_batch=True")
+  if [[ "${TRAINER:-megatron}" == "fsdp2" ]]; then
+    runner_overrides+=("actor_rollout_ref.actor.fsdp_config.fsdp_size=${dp_size}" "actor_rollout_ref.ref.fsdp_config.fsdp_size=${dp_size}")
+  fi
+fi
+runner_overrides+=("$@")
 if [[ -n "${RUNNER_CMD:-}" ]]; then
   read -r -a runner_cmd <<<"${RUNNER_CMD}"
 else
