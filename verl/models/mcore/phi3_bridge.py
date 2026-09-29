@@ -162,6 +162,12 @@ class Phi3Bridge(MegatronModelBridge):
 
         provider.normalization = "RMSNorm"
         provider.gated_linear_unit = True
+        # Phi3 attention and MLP are bias-free, but only some configs say so: Phi-4-mini-reasoning carries
+        # mlp_bias/lm_head_bias, Phi-4-reasoning carries neither, and CONFIG_MAPPING then leaves Megatron's
+        # add_bias_linear at its True default -- Megatron builds linear_qkv/linear_proj/linear_fc{1,2} biases
+        # that the checkpoint has no weights for, and the conversion task for each stays None.
+        provider.add_bias_linear = bool(getattr(hf_config, "mlp_bias", False))
+        provider.add_qkv_bias = bool(getattr(hf_config, "attention_bias", False))
         provider.hidden_dropout = 0.0
         provider.bias_activation_fusion = True
         provider.masked_softmax_fusion = True

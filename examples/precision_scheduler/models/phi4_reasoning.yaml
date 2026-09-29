@@ -1,0 +1,44 @@
+# Phi-4-reasoning (14B, Phi3ForCausalLM) -- per-model overlay, added 2026-09-21.
+#
+# Checkpoint pair:
+#   microsoft/Phi-4-reasoning @ 1de18ec97600877ce63dbf60c73b998da99f0195  (BF16, 40 layers, hidden 5120, 32k context)
+#   /data/huanchen/quant/Phi-4-reasoning-gptq-w4a16  (local llm-compressor GPTQ W4A16, group 128, symmetric,
+#     static act-order, lm_head kept -- the same recipe as the Phi-4-mini-reasoning community shadow; 512
+#     Open-Platypus samples x 2048 tokens; see /data/huanchen/quant/quantize_phi4_reasoning.py)
+# Same architecture family as Phi-4-mini-reasoning (fused qkv_proj / gate_up_proj, Phi3 Megatron bridge), no
+# LongRoPE (rope_scaling null, partial_rotary_factor 1.0), untied lm_head.  rollout.load_format stays auto for
+# the same reason as the mini (Phi3's AutoWeightsLoader with a dual-precision shadow attached).
+# Memory: BF16 base 28 GB; single-GPU Megatron TP1 + vLLM needs gpu_memory_utilization <= 0.45 (untested).
+data:
+  apply_chat_template_kwargs: {}
+
+actor_rollout_ref:
+  model:
+    path: microsoft/Phi-4-reasoning
+    trust_remote_code: true
+    use_remove_padding: true
+    lora_rank: 16
+    lora_alpha: 16
+    target_modules:
+      - qkv_proj
+      - o_proj
+      - gate_up_proj
+      - down_proj
+    lora:
+      rank: 16
+      alpha: 16
+      merge: false
+      target_modules:
+        - decoder.layers.*.self_attention.linear_qkv
+        - decoder.layers.*.self_attention.linear_proj
+        - decoder.layers.*.mlp.linear_fc1
+        - decoder.layers.*.mlp.linear_fc2
+  rollout:
+    load_format: auto
+    gpu_memory_utilization: 0.45
+    engine_kwargs:
+      vllm:
+        lora_target_modules: ${actor_rollout_ref.model.target_modules}
+    precision_scheduler:
+      int4_model: /data/huanchen/quant/Phi-4-reasoning-gptq-w4a16
+      int4_modules: all
