@@ -30,12 +30,12 @@ before the next rollout.
 | `cost_model.py` | `PolicyGrid(step=250, cap=16384, batch=32, prompt_step=128, prompt_max=2048)` replaces the STEP/CAP/BATCH/PROMPTS module constants; `make_tpot_cache`, `trajectory_cost`, `trajectory_cost_grid`, `plan_cost`, `switched_plan_cost` (the pseudo code of the C5 card) |
 | `hazard.py` | `HazardTable(risk, event, observed)`, `components(entries, finals, grid, events=None)` (delayed entry; `events=False` censors a request at `final`), `ema_update(old, new, alpha)` / `weighted_update(old, new, n_new, n_seen, prior_weight, alpha_min)` on observed bins only, `survival(table, start_index)` at bin start |
 | `tpot_grid.py` | `TpotGrid` (heatmap.json or legacy Gen1 CSV; log2 interpolation with NaN masking), `matrix_payload` from profiler cells, `validate_heatmap` (median-speedup guard), legacy CSV writer |
-| `policy_builder.py` | `build_decisions` (global search), `build_policy`, `fixed_frontier_policy`, `validate_policy`, `lookup`, `decisions_array`, `write_policy_atomic`, `load_policy` |
-| `traces.py` | request-lifetime traces, completed-step counting, EngineCore id suffix resolution, switch-cohort rows, metrics rows |
+| `policy_builder.py` | `build_decisions` (global search, `min_switch_frontier` floor), `build_policy`, `fixed_frontier_policy`, `validate_policy`, `lookup`, `decisions_array`, `write_policy_atomic`, `load_policy` |
+| `traces.py` | request-lifetime traces, completed-step counting, EngineCore id suffix resolution, switch-cohort rows (`cohort_frontier`: the applied switch frontier of a cohort), metrics rows |
 | `calibration.py` | initial BF16 / W4 tables from paired baseline traces (`paired_traces`), from a tail-W4 continuation trace (`grouped_traces`: one `W4Group` per cut, routed by `w4_group_for`), or explicit final lengths |
 | `tail_w4_calibration.py` | `calib-tail-w4`: re-issue every BF16 request alive at each cut (population quantiles, default 2/3, 3/4, 4/5, 9/10) as prompt + its BF16 prefix and decode it under uniform W4 (`plan_continuations`, `ContinuationTraceWriter`, `VllmEngine`) |
 | `downstream_regression.py` | `fit_points`, `fit_split` (120-run), `fit_replay_points` (Megatron replay), `fit_from_metrics` (validation lstsq), `slope_from_metrics` (inline per-model slope) |
-| `online_ema.py` | `OnlineEmaWatcher` (poll, gate, rebuild, hysteresis, atomic write, history), `replay_cohorts` (W4 groups) and `replay_bf16` (BF16 line, opt-in), both through `weighted_update` |
+| `online_ema.py` | `OnlineEmaWatcher` (poll, gate, rebuild, hysteresis, atomic write, history), `replay_cohorts` (W4 groups) and `replay_bf16` (BF16 line, opt-in), both through `weighted_update`; `replay_clock` (shared survival clock, `--update clock`, optional neighbour sharing) |
 | `plots.py` | speedup heatmap, policy switch surface, survival curves, regression scatter |
 | `replay_regression/` | `workloads.py` (token workloads from rollout dumps) and `worker.py` (Megatron `TrainingWorker` timing of old-logprob / ref / update; GPU tool) |
 | `cli.py` | `build-policy`, `watch-ema`, `calib-tail-w4`, `fit-downstream`, `grid`, `build-fixed-frontier` |
@@ -95,6 +95,9 @@ inline, so the generator exists for archival compatibility and forced-switch cal
 | calibration requests | 128 per baseline | `--calibration-requests` (256 distinct prompts in the b32c24 runs) |
 | W4 calibration | `--w4-trace` (uniform W4 = cut-0 group) and/or `--w4-cont-trace` (tail-W4 continuations, one group per cut) | at least one; `recipes/calibrate_tail_w4.sh` produces both traces |
 | cohort gating | on | `--no-cohort-gate` ingests every resolvable cohort (HEAD watcher behaviour) |
+| cohort routing | switch frontier | a switch cohort updates the W4 group of the frontier it switched at (`trigger.applied_response_tokens`, `traces.cohort_frontier`); the median entry is used only for cohorts without a trigger (2026-09-25 fix; before that the median entry, which trails the frontier, routed most cohorts one group too low) |
+| `w4_share_tokens` (clock) | 0 (off) | `--w4-share-tokens S`: the cohort also informs groups whose cut is within `S` tokens of its switch, weight `1 - |F - cut| / S`, intensity evidence only |
+| `min_switch_frontier` | -1 = first tail-W4 cut | `--min-switch-frontier`: no candidate switch below it (0 = off, or an explicit frontier); recorded in `policy.json offline_cost_model.min_switch_frontier` |
 | `steps` | 30 | watcher stops after that many completed rollouts |
 | heatmap guard | median speedup must differ from 1.0 by >= 2% | `--skip-heatmap-guard` |
 
@@ -110,8 +113,8 @@ policy before every rollout. The watcher reads
 1. `watch-ema --initialize-only` writes revision 0 from the paired baselines.
 2. The rollout starts; the watcher polls (0.25 s) the trace and the cohort file.
 3. When the number of completed rollouts changes, cohorts with `rollout_index <=
-   completed` are replayed in order onto the W4 group that priced their switch (largest
-   cut at or below the cohort's median entry; with `--bf16-online` every completed
+   completed` are replayed in order onto the W4 group that priced their switch (the group
+   of the frontier the cohort switched at; with `--bf16-online` every completed
    rollout is likewise blended into the BF16 line, switched requests censored at their
    entry), the policy is rebuilt with each candidate frontier priced by its group,
    the hysteresis limit is applied, and the policy is atomically replaced

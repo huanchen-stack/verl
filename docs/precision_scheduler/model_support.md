@@ -17,6 +17,7 @@ statements.
 |---|---|---|---|
 | Qwen3.5-9B / 4B | first-class | mm-token guard, jagged index_select fallback, GatedDeltaNet LoRA mapping (Megatron only) | `qwen3_5_9b.yaml`, `qwen3_5_4b.yaml` |
 | Phi-4-mini-reasoning | first-class (config only) | none (fused Phi3 target names, `rollout.load_format: auto`) | `phi4_mini_reasoning.yaml` |
+| Phi-4-reasoning (14B) | first-class (config only) | Phi3 bridge bias flags from the HF config (no LongRoPE, `rope_scaling` null, untied `lm_head`) | `phi4_reasoning.yaml` |
 | Gemma-4 E2B/E4B (12B/31B `gemma4_unified`) | flagged | `gemma4_dense_ffpa`, `gemma4_unified` normalization + `key_mapping`, padded-path chunked entropy, singleton logits | `gemma4_e2b.yaml` |
 | Nemotron-Nano-9B-v2 | flagged | rope-theta skip + HybridStack hook (Megatron only), identity LoRA targets | `nemotron_h.yaml` |
 | Qwen3.5-27B, Falcon-H1, DeepSeek distills, SmolLM3, GLM-Z1, Kimi-VL, Granite, MiniCPM | dropped | — | — |
@@ -57,6 +58,14 @@ through `recipes/full_step.sh` (B16, cap 1024): BF16 rollout/actor Pearson
 community llm-compressor INT4 shadow, flagged screening-only in the overlay).
 Merged-adapter export (`model.lora.merge=true`) is not implemented for the
 fused modules and raises.
+
+Bias flags (2026-09-21, for Phi-4-reasoning): Phi3 attention and MLP are bias-free, but
+only some configs say so. Phi-4-mini-reasoning carries `mlp_bias` / `lm_head_bias`,
+Phi-4-reasoning carries neither, and `CONFIG_MAPPING` then left Megatron's
+`add_bias_linear` at its `True` default, so Megatron built `linear_qkv` / `linear_proj` /
+`linear_fc{1,2}` biases the checkpoint has no weights for and their conversion tasks stayed
+`None`. The bridge now sets `provider.add_bias_linear = bool(hf_config.mlp_bias)` and
+`provider.add_qkv_bias = bool(hf_config.attention_bias)` (both default `False`).
 
 ## Mechanisms
 

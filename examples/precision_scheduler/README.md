@@ -18,7 +18,10 @@ exports and what the decision-13 launcher `run_gpu.sh` sets (`CUDA_VISIBLE_DEVIC
 | `run_megatron_fullstep.sh`, `run_fsdp_fullstep.sh` | two-line wrappers that pin `TRAINER` |
 | `recipes/rollout_only.sh` | generation + reward only, N steps (`trainer.rollout_only=true`) |
 | `recipes/full_step.sh` | full GRPO steps (rollout, old log-prob, ref, update, weight sync) |
-| `recipes/continuous_ema.sh` | online EMA policy: C6 `watch-ema` sidecar + runner with `reload_policy_each_rollout=true`, fail-closed |
+| `recipes/continuous_ema.sh` | online EMA policy: C6 `watch-ema` sidecar + runner with `reload_policy_each_rollout=true`, fail-closed; `DP_SIZE` runs that many trainer ranks and vLLM replicas on as many GPUs |
+| `recipes/train_replay.sh` | rollout-free RL steps for timing the trainer: recorded responses replayed through old-log-prob / ref / update (`ReplayAgentLoop`), `LAYOUT=megatron_tp\|megatron_dp\|fsdp_dp` on `N_GPUS` |
+| `analysis/build_replay.py` | extracts the recorded responses of a traced run (`trainer.stable_sample_uid=true`, `request_trace_log_tokens=true`) into the replay file `train_replay.sh` reads |
+| `analysis/eval_cohort_routing.py` | held-out score of the W4 continuation prediction under the cohort-routing rules (2026-09-25 fix, neighbour sharing) on recorded clock runs |
 | `long_run/train_arm.sh` | one 100-step arm: periodic checkpoints, shared step-0 LoRA, resume-from-latest, bounded attempts, `events.log` |
 | `long_run/evaluate_lora_patch.py` | deterministic held-out evaluator (greedy, fixed seed, Wilson 95% CI); exports a PEFT adapter from an FSDP checkpoint |
 | `long_run/summarize_runs.py` | timing aggregates over a warm-up-excluded window + per-step reward curves (archived schema) |
@@ -106,6 +109,15 @@ POLICY=full_w4 TRAIN_BATCH_SIZE=16 TOTAL_STEPS=30 bash examples/precision_schedu
 # the runner TRAIN_BATCH_SIZE=INITIAL_BATCH/ROLLOUT_N (must divide; a disagreeing TRAIN_BATCH_SIZE is refused)
 POLICY_PATH=$RUN_DIR/policy.json BF_TRACE=... W4_TRACE=... HEATMAP=... TOTAL_STEPS=30 RUNNER=rollout_only \
   bash examples/precision_scheduler/recipes/continuous_ema.sh
+# data-parallel: DP_SIZE=4 runs 4 trainer ranks + 4 vLLM replicas on 4 GPUs, every replica serves INITIAL_BATCH
+# requests per step (TRAIN_BATCH_SIZE = INITIAL_BATCH*DP_SIZE/ROLLOUT_N), the watcher learns from replica 0's trace;
+# sets trainer.n_gpus_per_node, trainer.balance_batch and (TRAINER=fsdp2) the fsdp_size of actor and ref.
+DP_SIZE=4 POLICY_PATH=... BF_TRACE=... W4_CONT_TRACE=... HEATMAP=... RUNNER=full_step \
+  scripts/precision_scheduler/env/run_gpu.sh --gpus 4 --timeout 12h -- bash examples/precision_scheduler/recipes/continuous_ema.sh
+# rollout-free training-time benchmark: record once (a traced run), replay through any layout
+python examples/precision_scheduler/analysis/build_replay.py --trace $REC/traces/request_lifetimes_replica000_node000.jsonl --out replay.json
+RUN_DIR=... MODEL_KEY=qwen3_5_9b REPLAY_FILE=replay.json LAYOUT=megatron_dp \
+  scripts/precision_scheduler/env/run_gpu.sh --gpus 4 --timeout 4h -- bash examples/precision_scheduler/recipes/train_replay.sh
 # any recipe: DRY_RUN=1 prints the override list; extra arguments are appended as Hydra overrides
 DRY_RUN=1 POLICY=fixed_k8000 bash examples/precision_scheduler/recipes/full_step.sh trainer.total_training_steps=5
 ```

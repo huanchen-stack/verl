@@ -13,6 +13,7 @@ dicts in the base config). No environment variables.
 | `qwen3_5_9b.yaml` | Qwen/Qwen3.5-9B + Intel AutoRound INT4 | first-class | GatedDeltaNet `in_proj_*`/`out_proj` LoRA targets |
 | `qwen3_5_4b.yaml` | Qwen/Qwen3.5-4B + Intel AutoRound INT4 | first-class | same as 9B |
 | `phi4_mini_reasoning.yaml` | microsoft/Phi-4-mini-reasoning + llm-compressor W4A16 | first-class (config only) | fused Phi3 LoRA names; `rollout.load_format: auto` |
+| `phi4_reasoning.yaml` | microsoft/Phi-4-reasoning (14B) + local llm-compressor GPTQ W4A16 (`/data/huanchen/quant/Phi-4-reasoning-gptq-w4a16`, same recipe as the mini's shadow) | first-class (config only) | same Phi3 bridge; no LongRoPE; `gpu_memory_utilization <= 0.45` on one GPU (BF16 base 28 GB) |
 | `gemma4_e2b.yaml` | google/gemma-4-E2B QAT pair | flagged | `gemma4_dense_ffpa`, padded path, `mlp_only`, PEFT exclude regex |
 | `nemotron_h.yaml` | nvidia/NVIDIA-Nemotron-Nano-9B-v2 + RedHatAI W4A16 | flagged | identity `in_proj`/`out_proj`; Marlin K padding on the vLLM side |
 

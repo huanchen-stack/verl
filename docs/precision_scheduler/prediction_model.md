@@ -1,4 +1,4 @@
-# The prediction model behind the switch decision (state as of 2026-09-21)
+# The prediction model behind the switch decision (state as of 2026-09-25)
 
 Audience: an agent that has to read, modify or evaluate the scheduler. Every claim points at code on
 branch `rollout-precision-scheduler-clean` (verl fork); paths are relative to
@@ -205,6 +205,27 @@ routing one: at its usual frontier 500 the calibration predicts 1412 more tokens
 under-estimate but overshoots on both Phi models, so it stays off. The 9B early-switch question should be
 re-measured with the fix before it is attributed to the token price alone.
 
+### 3.7 Switch-candidate floor (`--min-switch-frontier`, 2026-09-25) and what the fix did on the GPU
+
+`build_decisions` searched every frontier as a switch candidate. Below the first tail-W4 cut the calibration has no
+continuation measured from a BF16 prefix; a switch there is priced by the cut-0 uniform-W4 group, whose data is W4
+from the first token. Once the first tail group learns that its continuations run long (which 3.6 now lets it do),
+the search escapes to that unpriced region, and the cut-0 group, with four times the prior weight of a tail group,
+is slow to correct it: Qwen3.5-4B, Megatron, seed 42, with the routing fix alone switched at 2250 from rollout 16
+on (first cut 2750) and was slower than the pre-fix code (271.9 vs 259.3 s/step, steps 9-48). `build_decisions` /
+`build_policy` take `min_switch_frontier` (0 = old behaviour); the watcher defaults it to the first tail cut
+(`--min-switch-frontier -1`; `0` turns the floor off; an explicit frontier is honoured) and records it in
+`policy.json` (`offline_cost_model.min_switch_frontier`).
+
+The floor removed the escape but not the tendency: with it the seed-42 run sat on the floor 2750 for half of its
+rollouts, the same place and step time as "no online update", 8% slower than the pre-fix code
+(old / new 0.919 [0.851, 0.988]); seeds 43 and 44 were not different from it. Under FSDP2 (KL off) every adaptive
+and fixed arm ties. Full tables, CIs and the run directories:
+[`RUN_2026-09-25_qwen4b_efficiency_push.md`](RUN_2026-09-25_qwen4b_efficiency_push.md). The open question is
+whether the early-switch push comes from the BF16 line (it never observes the BF16 tail after a switch) or from the
+one-parameter W4 group update; `PLAN_two_line_ema.md` is the proposal for the estimator that would separate them.
+Runs and figures made before 2026-09-25 used the old routing and no floor (`f8cf7f21`).
+
 ## 4. Things that are *not* in the model (checked, so nobody re-derives them)
 
 * **Batch size does not move the switch point.** Saving and cost of a switch both scale with the
@@ -231,6 +252,7 @@ re-measured with the fix before it is attributed to the token price alone.
 | `--bf16-probe-every` | 0 | `EMA_BF16_PROBE_EVERY` |
 | `--rho` (clock) | 0.9 | `EMA_RHO` |
 | `--w4-share-tokens` (clock) | 0 (off) | `EMA_W4_SHARE_TOKENS` |
+| `--min-switch-frontier` | -1 (first tail-W4 cut; 0 = no floor) | not exported by the recipe (watcher default; override the command with `WATCHER_CMD`) |
 
 Run directories for the evidence: `/data/huanchen/ps_runs/b32c24_<model>_{ema_tailw4_p64,
 ema_both_p64, ema_both_p64_probe4, ema_both_p64_seed43}`; calibration traces
